@@ -6,6 +6,12 @@ __pycache__/
 # C extensions
 *.so
 
+*.zip
+runs/
+checkpoints/
+*.pt
+*.pth
+
 # Distribution / packaging
 .Python
 build/
