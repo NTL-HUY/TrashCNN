@@ -13,6 +13,7 @@ DATA_ROOT   = r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco"
 SCORE_THRESH = 0.25
 CLASS_NAMES = ["trash", "cardboard", "glass", "metal", "other", "paper", "plastic"]
 COLORS      = ["#FF4757", "#2ED573", "#1E90FF", "#FFA502", "#ECCC68", "#A29BFE", "#FF6B81"]
+
 def load_model(path,device):
     ckpt = torch.load(path, map_location=device)
     state = ckpt["model"] if "model" in ckpt else ckpt
@@ -37,8 +38,8 @@ def main():
 
     model = load_model(MODEL_PATH,device)
 
-    dataset = TrashDataset(root=DATA_ROOT,split="valid")
-    image, _ = dataset[1]
+    dataset = TrashDataset(root=DATA_ROOT,split="train")
+    image, _ = dataset[99]
     output = predict(model,[image],device)
     ve_anh(image, output[0])
     print(f"Predicted: {output}")
