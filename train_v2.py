@@ -6,15 +6,11 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torch.utils.tensorboard import SummaryWriter
-from TrashCNN.dataset import TrashDataset, collate_fn
-from TrashCNN.model import build_model
+from dataset import TrashDataset, collate_fn
+from model import build_model
 from tqdm.autonotebook import tqdm
 import numpy as np
 
-DATA_ROOT = r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco"
-BATCH_SIZE = 4
-NUM_WORKERS = 0
-NUM_CLASSES = 7
 
 
 def get_args():
@@ -70,7 +66,7 @@ def train(args):
     writer = SummaryWriter(log_dir=args.log_path)
     print(f"TensorBoard logs → {args.log_path}")
     print(f"  Run: tensorboard --logdir {args.log_path}\n")
-    model = build_model(num_classes=NUM_CLASSES).to(device)
+    model = build_model(num_classes=len(train_dataset.categories) + 1).to(device)
     opimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
     best_map = -1
     for epoch in range(args.epochs):
