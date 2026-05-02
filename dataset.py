@@ -15,7 +15,10 @@ class TrashDataset(torch.utils.data.Dataset):
         self.images = coco["images"]
         self.annotations = coco["annotations"]
         self.categories = coco["categories"]
-
+        self.cat_id_to_label = {
+            cat["id"]: i + 1
+            for i, cat in enumerate(self.categories)
+        }
         self.img_to_anns = {}
         for ann in self.annotations:
             self.img_to_anns.setdefault(ann["image_id"], []).append(ann)
@@ -32,7 +35,7 @@ class TrashDataset(torch.utils.data.Dataset):
         for ann in anns:
             x, y, w, h = ann['bbox']
             boxes.append([x, y, x + w, y + h])
-            labels.append(ann['category_id'] + 1)
+            labels.append(self.cat_id_to_label[ann['category_id']])
 
         boxes = torch.zeros((0, 4), dtype=torch.float32) if len(boxes) == 0 \
             else torch.as_tensor(boxes, dtype=torch.float32)

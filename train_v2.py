@@ -1,6 +1,8 @@
 import argparse
 import os
 import shutil
+from pprint import pprint
+
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 import torch
 from torch.utils.data import DataLoader
@@ -17,13 +19,14 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=0)
-    parser.add_argument("--epochs", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=0.0005)
     parser.add_argument("--data_path", type=str, default=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco")
     parser.add_argument("--image_size", type=int, default=416)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--log_path", type=str, default="tensorboard/TrashCNN")
     parser.add_argument("--save_path", type=str, default="trained_models")
+    parser.add_argument("--resume_train_path", type=str, default="trained_models/last_model.pth")
     args = parser.parse_args()
     return args
 
@@ -42,7 +45,8 @@ def train(args):
         dataset=train_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        shuffle=True
     )
     val_dataset = TrashDataset(
         root=args.data_path,
@@ -63,13 +67,26 @@ def train(args):
     if not os.path.isdir(args.save_path):
         os.makedirs(args.save_path)
 
+
+
     writer = SummaryWriter(log_dir=args.log_path)
     print(f"TensorBoard logs → {args.log_path}")
     print(f"  Run: tensorboard --logdir {args.log_path}\n")
     model = build_model(num_classes=len(train_dataset.categories) + 1).to(device)
     opimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
     best_map = -1
-    for epoch in range(args.epochs):
+
+    start_epoch = 0
+    if args.resume_train_path is not None and os.path.exists(args.resume_train_path):
+        print(f"Load checkpoint from {args.resume_train_path}")
+        checkpoint = torch.load(args.resume_train_path, map_location=device)
+
+        model.load_state_dict(checkpoint["model"])
+        opimizer.load_state_dict(checkpoint["optimizer"])
+        start_epoch = checkpoint["epoch"]
+        print(f"Tiep tuc tu epoch {start_epoch}")
+
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         train_loss = []
         train_progress_bar = tqdm(train_data_loader, colour="cyan")
@@ -98,9 +115,15 @@ def train(args):
         for iter, (images, targets) in enumerate(val_progress_bar):
             images = [image.to(device) for image in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
+            # if iter == 20:
+            #     exit(0)
             with torch.no_grad():  # khong tinh backward()
                 predictions = model(images)
+                # pprint(predictions)
+                # print("PRED:", predictions[0])
+                # print("GT:", targets[0])
+                # print(predictions[0]["labels"])
+                # print(targets[0]["labels"])
                 metric.update(predictions, targets)
                 # post process
         map = metric.compute()
@@ -111,6 +134,7 @@ def train(args):
             "epoch": epoch + 1,
             "model": model.state_dict(),
             "optimizer": opimizer.state_dict(),
+            "best_map": best_map
         }
         if map["map"] > best_map:
             # triển khai

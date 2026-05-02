@@ -1,3 +1,5 @@
+from pprint import pprint
+
 import cv2
 import torch
 import numpy as np
@@ -25,7 +27,7 @@ def deploy_with_gt(index=9):
     # ===== Load dataset =====
     dataset = TrashDataset(
         root=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco",
-        split="valid",
+        split="train",
         transforms=transforms.ToTensor()
     )
 
@@ -59,7 +61,7 @@ def deploy_with_gt(index=9):
 
     # ===== Vẽ Prediction (xanh lá) =====
     for box, label, score in zip(pred_boxes, pred_labels, pred_scores):
-        if score < 0.3:
+        if score < 0.1:
             continue
         x1, y1, x2, y2 = map(int, box)
         class_name = CLASS_NAMES[label]
@@ -83,7 +85,6 @@ def deploy_with_gt(index=9):
     ]
     plt.legend(handles=legend, loc="upper right", fontsize=11)
     plt.tight_layout()
-    plt.savefig("result.jpg", bbox_inches="tight")
     plt.show()
 
     print(f"\n📊 Ground Truth:  {len(gt_boxes)} boxes")
@@ -91,5 +92,12 @@ def deploy_with_gt(index=9):
 
 
 if __name__ == "__main__":
-    for i in range(10):
-        deploy_with_gt(i*2)
+    # for i in range(10):
+    #     deploy_with_gt(i*2)
+    dataset = TrashDataset(
+        root=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco",
+        split="train",
+        transforms=transforms.ToTensor()
+    )
+    pprint(dataset.categories)
+    pprint(dataset.cat_id_to_label)
