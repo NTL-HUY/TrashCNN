@@ -1,216 +1,456 @@
 """
-  1. DetectionTransforms: transform ĐỒNG THỜI image + boxes (không phải chỉ image)
-     → Bắt buộc để augmentation không làm lệch bounding box
-  2. Thêm ImageNet normalization (mean/std) – thiếu cái này là nguyên nhân chính
-     khiến loss cao và mAP ≈ 0 vì backbone expect input đã normalize
-  3. Random horizontal flip với box transform (train only)
-  4. Random brightness/contrast (train only) – giúp model robust hơn
-  5. Lọc degenerate boxes (w≤0 hoặc h≤0) – gây NaN loss trong RPN
-  6. image_id trong target – cần thiết cho torchmetrics MeanAveragePrecision
-  7. get_class_weights() – dùng với WeightedRandomSampler để giải quyết imbalance
+dataset.py - TACO Dataset Download, Filter & DataLoader
+Filters only 5 classes: plastic, metal, paper, cardboard, glass
+Auto-downloads from TACO GitHub and maps supercategories to 5 target classes
 """
 
-import json
 import os
-import random
-from collections import defaultdict
-from typing import Optional, Tuple, List, Dict
-
+import json
+import argparse
+import requests
+import hashlib
+import time
+from pathlib import Path
+from PIL import Image, ImageFile
 import torch
+from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as T
 import torchvision.transforms.functional as TF
-from PIL import Image
+import numpy as np
+import random
+import logging
+from tqdm import tqdm
+import shutil
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+# TACO → 5-class mapping
+# Maps TACO supercategory names → our 5 classes
+# ─────────────────────────────────────────────
+TACO_SUPERCATEGORY_MAP = {
+    # PLASTIC
+    "Plastic bag & wrapper": "plastic",
+    "Plastic container": "plastic",
+    "Plastic utensils": "plastic",
+    "Plastic lid": "plastic",
+    "Plastic straw": "plastic",
+    "Plastic bottle": "plastic",
+    "Other plastic": "plastic",
+    "Plastified paper": "plastic",
+    "Single-use carrier bag": "plastic",
+    "Squeezable tube": "plastic",
+    "Plastic film": "plastic",
+
+    # METAL
+    "Can": "metal",
+    "Metal lid": "metal",
+    "Metal bottle cap": "metal",
+    "Aluminium foil": "metal",
+    "Other metal": "metal",
+    "Metal": "metal",
+    "Scrap metal": "metal",
+    "Drink can": "metal",
+    "Food can": "metal",
+
+    # PAPER
+    "Paper bag": "paper",
+    "Newspaper & magazine": "paper",
+    "Paper cup": "paper",
+    "Tissues": "paper",
+    "Paper": "paper",
+    "Wrapping paper": "paper",
+    "Other paper": "paper",
+    "Carton": "paper",
+
+    # CARDBOARD
+    "Cardboard": "cardboard",
+    "Corrugated cardboard": "cardboard",
+    "Pizza box": "cardboard",
+    "Egg carton": "cardboard",
+
+    # GLASS
+    "Glass bottle": "glass",
+    "Broken glass": "glass",
+    "Glass jar": "glass",
+    "Other glass": "glass",
+    "Glass": "glass",
+}
+
+TARGET_CLASSES = ["background", "plastic", "metal", "paper", "cardboard", "glass"]
+CLASS_TO_IDX = {cls: idx for idx, cls in enumerate(TARGET_CLASSES)}
+NUM_CLASSES = len(TARGET_CLASSES)  # 6 (including background)
+
+# TACO annotation JSON URL (official)
+TACO_ANNOTATIONS_URL = "https://raw.githubusercontent.com/pedropro/TACO/master/data/annotations.json"
+TACO_DOWNLOAD_SCRIPT = "https://raw.githubusercontent.com/pedropro/TACO/master/data/download.py"
 
 
-# ─────────────────────────── Transforms ─────────────────────────────────
+# ─────────────────────────────────────────────
+# Download Utilities
+# ─────────────────────────────────────────────
+def download_file(url: str, dest: Path, desc: str = "") -> bool:
+    """Download a file with progress bar and retry logic."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(3):
+        try:
+            response = requests.get(url, stream=True, timeout=30)
+            response.raise_for_status()
+            total = int(response.headers.get("content-length", 0))
+            with open(dest, "wb") as f, tqdm(
+                total=total, unit="B", unit_scale=True, desc=desc or dest.name, leave=False
+            ) as bar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    bar.update(len(chunk))
+            return True
+        except Exception as e:
+            logger.warning(f"Attempt {attempt+1}/3 failed for {url}: {e}")
+            time.sleep(2 ** attempt)
+    return False
 
-class DetectionTransforms:
+
+def download_taco_dataset(data_dir: str = "data/taco") -> str:
     """
-    Custom transform xử lý cùng lúc image + target (boxes).
-
-    Tại sao không dùng transforms.ToTensor() thông thường?
-        → transforms.ToTensor chỉ biến đổi image, không đụng vào boxes.
-        → Nếu flip/crop image mà không flip/crop boxes → annotation bị sai.
-
-    Pipeline:
-        1. PIL → Tensor (float32, [0,1])
-        2. Normalize với ImageNet mean/std
-        3. [train only] Random horizontal flip + flip boxes
-        4. [train only] Random color jitter (brightness, contrast)
+    Downloads TACO annotations + images for only 5 target classes.
+    Returns path to processed annotations JSON.
     """
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = data_dir / "images"
+    images_dir.mkdir(exist_ok=True)
 
-    # ImageNet statistics – dùng khi train từ scratch trên ảnh RGB thông thường
-    MEAN = [0.485, 0.456, 0.406]
-    STD = [0.229, 0.224, 0.225]
+    ann_path = data_dir / "annotations.json"
+    filtered_ann_path = data_dir / "annotations_filtered.json"
 
-    def __init__(self, is_train: bool = False):
-        self.is_train = is_train
+    # ── Step 1: Download annotations ──
+    if not ann_path.exists():
+        logger.info("Downloading TACO annotations...")
+        ok = download_file(TACO_ANNOTATIONS_URL, ann_path, "annotations.json")
+        if not ok:
+            raise RuntimeError("Failed to download TACO annotations. Check internet connection.")
+    else:
+        logger.info(f"Annotations already exist at {ann_path}")
 
-    def __call__(
-            self,
-            image: Image.Image,
-            target: Dict,
-    ) -> Tuple[torch.Tensor, Dict]:
+    # ── Step 2: Parse & filter annotations ──
+    logger.info("Parsing and filtering annotations for 5 target classes...")
+    with open(ann_path, "r") as f:
+        coco_data = json.load(f)
 
-        # ── 1. PIL → Tensor [C, H, W] float32 in [0, 1] ──────────────
-        img = TF.to_tensor(image)
+    # Build category_id → target class mapping
+    cat_id_to_target = {}
+    for cat in coco_data["categories"]:
+        supercategory = cat.get("supercategory", "")
+        name = cat.get("name", "")
+        target = TACO_SUPERCATEGORY_MAP.get(supercategory) or TACO_SUPERCATEGORY_MAP.get(name)
+        if target:
+            cat_id_to_target[cat["id"]] = target
 
-        # ── 2. ImageNet Normalize ──────────────────────────────────────
-        img = TF.normalize(img, mean=self.MEAN, std=self.STD)
+    logger.info(f"Mapped {len(cat_id_to_target)} TACO categories to 5 target classes")
 
-        if self.is_train:
-            _, H, W = img.shape
-            boxes = target["boxes"]  # shape (N, 4) – xyxy
+    # Filter annotations
+    valid_anns = [a for a in coco_data["annotations"] if a["category_id"] in cat_id_to_target]
+    valid_img_ids = set(a["image_id"] for a in valid_anns)
+    valid_images = [img for img in coco_data["images"] if img["id"] in valid_img_ids]
 
-            # ── 3. Random Horizontal Flip ──────────────────────────────
-            if random.random() > 0.5 and len(boxes) > 0:
-                img = TF.hflip(img)
-                flipped = boxes.clone()
-                flipped[:, 0] = W - boxes[:, 2]  # new x1 = W - old x2
-                flipped[:, 2] = W - boxes[:, 0]  # new x2 = W - old x1
-                target["boxes"] = flipped
+    logger.info(f"Filtered: {len(valid_images)} images | {len(valid_anns)} annotations")
 
-            # ── 4. Random Brightness / Contrast ───────────────────────
-            brightness = random.uniform(0.7, 1.3)
-            contrast = random.uniform(0.7, 1.3)
-            img = TF.adjust_brightness(img, brightness)
-            img = TF.adjust_contrast(img, contrast)
+    # Class distribution
+    class_counts = {cls: 0 for cls in TARGET_CLASSES[1:]}
+    for ann in valid_anns:
+        cls = cat_id_to_target[ann["category_id"]]
+        class_counts[cls] += 1
+    logger.info(f"Class distribution: {class_counts}")
 
-        return img, target
+    # ── Step 3: Download images ──
+    logger.info(f"Downloading {len(valid_images)} images...")
+    failed = []
+    for img_info in tqdm(valid_images, desc="Downloading images"):
+        img_path = images_dir / img_info["file_name"].replace("/", "_")
+        if img_path.exists():
+            continue
+        url = img_info.get("flickr_url") or img_info.get("coco_url", "")
+        if not url:
+            failed.append(img_info["id"])
+            continue
+        ok = download_file(url, img_path, desc="")
+        if not ok:
+            failed.append(img_info["id"])
+
+    if failed:
+        logger.warning(f"Failed to download {len(failed)} images. They will be skipped.")
+        # Remove images and annotations for failed downloads
+        failed_set = set(failed)
+        valid_images = [img for img in valid_images if img["id"] not in failed_set]
+        valid_anns = [a for a in valid_anns if a["image_id"] not in failed_set]
+
+    # Update file_name to local paths
+    for img_info in valid_images:
+        img_info["local_path"] = str(images_dir / img_info["file_name"].replace("/", "_"))
+
+    # ── Step 4: Save filtered annotations ──
+    filtered_data = {
+        "images": valid_images,
+        "annotations": valid_anns,
+        "categories": [
+            {"id": CLASS_TO_IDX[cls], "name": cls, "supercategory": cls}
+            for cls in TARGET_CLASSES[1:]
+        ],
+        "cat_id_to_target": {str(k): v for k, v in cat_id_to_target.items()},
+        "original_categories": coco_data["categories"],
+    }
+    with open(filtered_ann_path, "w") as f:
+        json.dump(filtered_data, f, indent=2)
+
+    logger.info(f"Saved filtered annotations to {filtered_ann_path}")
+    logger.info(f"Final: {len(valid_images)} images | {len(valid_anns)} annotations")
+    return str(filtered_ann_path)
 
 
-# ─────────────────────────── Dataset ────────────────────────────────────
-
-class TrashDataset(torch.utils.data.Dataset):
+# ─────────────────────────────────────────────
+# Augmentation
+# ─────────────────────────────────────────────
+class Augmentor:
     """
-    TACO dataset reader (COCO JSON format).
-
-    Parameters
-    ----------
-    root       : thư mục chứa các split (train/, valid/, test/)
-    split      : "train" | "valid" | "test"
-    transforms : DetectionTransforms
+    Custom augmentation pipeline compatible with bounding boxes.
+    Applied only during training.
     """
+    def __init__(self, min_size=800, max_size=1333):
+        self.min_size = min_size
+        self.max_size = max_size
 
-    def __init__(
-            self,
-            root: str,
-            split: str = "train",
-            transforms: Optional[DetectionTransforms] = None,
-    ):
-        self.root = os.path.join(root, split)
-        self.transforms = transforms
+    def __call__(self, image, target):
+        # Random horizontal flip
+        if random.random() > 0.5:
+            image, target = self._hflip(image, target)
 
-        ann_path = os.path.join(self.root, "_annotations.coco.json")
-        with open(ann_path, "r", encoding="utf-8") as f:
-            coco = json.load(f)
+        # Random brightness/contrast/saturation
+        if random.random() > 0.5:
+            image = TF.adjust_brightness(image, brightness_factor=random.uniform(0.7, 1.3))
+        if random.random() > 0.5:
+            image = TF.adjust_contrast(image, contrast_factor=random.uniform(0.7, 1.3))
+        if random.random() > 0.5:
+            image = TF.adjust_saturation(image, saturation_factor=random.uniform(0.7, 1.3))
+        if random.random() > 0.3:
+            image = TF.adjust_hue(image, hue_factor=random.uniform(-0.1, 0.1))
 
-        self.images = coco["images"]
-        self.annotations = coco["annotations"]
-        self.categories = coco["categories"]
-
-        # category_id (COCO) → label index (1-based; 0 = background)
-        self.cat_id_to_label: Dict[int, int] = {
-            cat["id"]: i + 1
-            for i, cat in enumerate(self.categories)
-        }
-        self.label_to_name: Dict[int, str] = {
-            i + 1: cat["name"]
-            for i, cat in enumerate(self.categories)
-        }
-
-        # image_id → list of annotations
-        self.img_to_anns: Dict[int, list] = defaultdict(list)
-        for ann in self.annotations:
-            self.img_to_anns[ann["image_id"]].append(ann)
-
-    # ── Helpers ───────────────────────────────────────────────────────
-
-    def get_class_weights(self) -> List[float]:
-        """
-        Trả về weight cho mỗi sample để dùng với WeightedRandomSampler.
-        Weight = nghịch đảo tần suất class hiếm nhất trong ảnh đó.
-        → Giải quyết vấn đề mất cân bằng (plastic 1925 vs other 17).
-        """
-        # Đếm bbox theo class
-        class_count: Dict[int, int] = defaultdict(int)
-        for anns in self.img_to_anns.values():
-            for ann in anns:
-                label = self.cat_id_to_label[ann["category_id"]]
-                class_count[label] += 1
-
-        total = sum(class_count.values()) or 1
-        # class weight = tổng / số bbox của class đó
-        class_weight = {
-            cls: total / (cnt + 1e-6)
-            for cls, cnt in class_count.items()
-        }
-
-        weights: List[float] = []
-        for img_info in self.images:
-            img_id = img_info["id"]
-            anns = self.img_to_anns.get(img_id, [])
-            if not anns:
-                weights.append(1.0)
-            else:
-                labels = [self.cat_id_to_label[a["category_id"]] for a in anns]
-                # Ảnh chứa class hiếm → weight cao → được sample nhiều hơn
-                w = max(class_weight.get(l, 1.0) for l in labels)
-                weights.append(w)
-
-        return weights
-
-    def __getitem__(self, idx: int):
-        img_info = self.images[idx]
-        img_id = img_info["id"]
-        img_path = os.path.join(self.root, img_info["file_name"])
-
-        image = Image.open(img_path).convert("RGB")
-
-        # ── Parse annotations ──────────────────────────────────────────
-        anns = self.img_to_anns.get(img_id, [])
-        boxes, labels = [], []
-
-        for ann in anns:
-            x, y, w, h = ann["bbox"]
-            x1, y1, x2, y2 = x, y, x + w, y + h
-
-            # ── FIX: lọc degenerate box (w≤0 hoặc h≤0 gây NaN loss) ──
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            boxes.append([x1, y1, x2, y2])
-            labels.append(self.cat_id_to_label[ann["category_id"]])
-
-        if boxes:
-            boxes_t = torch.as_tensor(boxes, dtype=torch.float32)
-            labels_t = torch.as_tensor(labels, dtype=torch.int64)
-        else:
-            boxes_t = torch.zeros((0, 4), dtype=torch.float32)
-            labels_t = torch.zeros((0,), dtype=torch.int64)
-
-        target = {
-            "boxes": boxes_t,
-            "labels": labels_t,
-            "image_id": torch.tensor([img_id], dtype=torch.int64),
-        }
-
-        # ── Apply transforms ───────────────────────────────────────────
-        if self.transforms is not None:
-            image, target = self.transforms(image, target)
-        else:
-            image = TF.to_tensor(image)
-            image = TF.normalize(image,
-                                 mean=DetectionTransforms.MEAN,
-                                 std=DetectionTransforms.STD)
+        # Random grayscale
+        if random.random() > 0.9:
+            image = TF.rgb_to_grayscale(image, num_output_channels=3)
+            image = TF.to_pil_image(np.array(image))
 
         return image, target
 
-    def __len__(self) -> int:
+    def _hflip(self, image, target):
+        w, _ = image.size
+        image = TF.hflip(image)
+        boxes = target["boxes"].clone()
+        boxes[:, [0, 2]] = w - boxes[:, [2, 0]]
+        target["boxes"] = boxes
+        return image, target
+
+
+def get_transform(train: bool):
+    """Returns transform pipeline."""
+    transforms = []
+    transforms.append(T.ToTensor())
+    transforms.append(T.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    ))
+    return T.Compose(transforms)
+
+
+# ─────────────────────────────────────────────
+# Dataset Class
+# ─────────────────────────────────────────────
+class TACODataset(Dataset):
+    """
+    TACO Dataset for Faster R-CNN.
+    Loads filtered annotations and returns images + targets.
+    """
+
+    def __init__(
+        self,
+        ann_file: str,
+        split: str = "train",
+        train_ratio: float = 0.8,
+        val_ratio: float = 0.1,
+        transforms=None,
+        augment: bool = False,
+        seed: int = 42,
+        min_area: float = 100.0,   # filter tiny boxes
+    ):
+        self.transforms = transforms
+        self.augment = augment
+        self.augmentor = Augmentor() if augment else None
+        self.min_area = min_area
+
+        with open(ann_file, "r") as f:
+            data = json.load(f)
+
+        self.cat_id_to_target = {int(k): v for k, v in data["cat_id_to_target"].items()}
+
+        # Build image_id → annotations index
+        self.img_ann_map = {}
+        for ann in data["annotations"]:
+            iid = ann["image_id"]
+            self.img_ann_map.setdefault(iid, []).append(ann)
+
+        # Filter images that have at least 1 valid annotation
+        all_images = [img for img in data["images"] if img["id"] in self.img_ann_map]
+
+        # Reproducible split
+        rng = random.Random(seed)
+        rng.shuffle(all_images)
+        n = len(all_images)
+        n_train = int(n * train_ratio)
+        n_val = int(n * val_ratio)
+
+        if split == "train":
+            self.images = all_images[:n_train]
+        elif split == "val":
+            self.images = all_images[n_train:n_train + n_val]
+        elif split == "test":
+            self.images = all_images[n_train + n_val:]
+        else:
+            raise ValueError(f"Unknown split: {split}")
+
+        logger.info(f"[{split.upper()}] {len(self.images)} images loaded")
+
+    def __len__(self):
         return len(self.images)
 
+    def __getitem__(self, idx):
+        img_info = self.images[idx]
+        img_path = img_info.get("local_path", img_info.get("file_name", ""))
 
-# ─────────────────────────── Collate ────────────────────────────────────
+        # Load image
+        try:
+            image = Image.open(img_path).convert("RGB")
+        except Exception as e:
+            logger.warning(f"Cannot load image {img_path}: {e}. Using blank image.")
+            image = Image.new("RGB", (640, 480), color=(128, 128, 128))
 
+        w, h = image.size
+        anns = self.img_ann_map.get(img_info["id"], [])
+
+        boxes, labels, areas, iscrowd = [], [], [], []
+        for ann in anns:
+            target_cls = self.cat_id_to_target.get(ann["category_id"])
+            if target_cls is None:
+                continue
+            x, y, bw, bh = ann["bbox"]
+            # COCO format: [x, y, width, height] → [x1, y1, x2, y2]
+            x1, y1 = max(0, x), max(0, y)
+            x2, y2 = min(w, x + bw), min(h, y + bh)
+            area = (x2 - x1) * (y2 - y1)
+            if area < self.min_area or x2 <= x1 or y2 <= y1:
+                continue
+            boxes.append([x1, y1, x2, y2])
+            labels.append(CLASS_TO_IDX[target_cls])
+            areas.append(area)
+            iscrowd.append(ann.get("iscrowd", 0))
+
+        if len(boxes) == 0:
+            # Return a dummy sample (handled in collate)
+            boxes = torch.zeros((0, 4), dtype=torch.float32)
+            labels = torch.zeros((0,), dtype=torch.int64)
+            areas = torch.zeros((0,), dtype=torch.float32)
+            iscrowd = torch.zeros((0,), dtype=torch.int64)
+        else:
+            boxes = torch.tensor(boxes, dtype=torch.float32)
+            labels = torch.tensor(labels, dtype=torch.int64)
+            areas = torch.tensor(areas, dtype=torch.float32)
+            iscrowd = torch.tensor(iscrowd, dtype=torch.int64)
+
+        target = {
+            "boxes": boxes,
+            "labels": labels,
+            "image_id": torch.tensor([img_info["id"]]),
+            "area": areas,
+            "iscrowd": iscrowd,
+        }
+
+        # Augmentation (train only)
+        if self.augmentor is not None and len(target["boxes"]) > 0:
+            image, target = self.augmentor(image, target)
+
+        if self.transforms is not None:
+            image = self.transforms(image)
+
+        return image, target
+
+
+# ─────────────────────────────────────────────
+# Collate function
+# ─────────────────────────────────────────────
 def collate_fn(batch):
-    """FasterRCNN cần list of images và list of targets (không stack tensor)."""
+    """Custom collate: returns list of images and list of targets."""
     return tuple(zip(*batch))
+
+
+# ─────────────────────────────────────────────
+# DataLoader factory
+# ─────────────────────────────────────────────
+def build_dataloaders(
+    ann_file: str,
+    batch_size: int = 4,
+    num_workers: int = 2,
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    seed: int = 42,
+):
+    """Build train/val/test DataLoaders."""
+    train_transform = get_transform(train=True)
+    val_transform = get_transform(train=False)
+
+    train_ds = TACODataset(
+        ann_file, split="train",
+        train_ratio=train_ratio, val_ratio=val_ratio,
+        transforms=train_transform, augment=True, seed=seed
+    )
+    val_ds = TACODataset(
+        ann_file, split="val",
+        train_ratio=train_ratio, val_ratio=val_ratio,
+        transforms=val_transform, augment=False, seed=seed
+    )
+    test_ds = TACODataset(
+        ann_file, split="test",
+        train_ratio=train_ratio, val_ratio=val_ratio,
+        transforms=val_transform, augment=False, seed=seed
+    )
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, collate_fn=collate_fn,
+        pin_memory=True, drop_last=True,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=1, shuffle=False,
+        num_workers=num_workers, collate_fn=collate_fn,
+        pin_memory=True,
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=1, shuffle=False,
+        num_workers=num_workers, collate_fn=collate_fn,
+        pin_memory=True,
+    )
+
+    return train_loader, val_loader, test_loader
+
+
+# ─────────────────────────────────────────────
+# CLI: Download dataset
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Download & prepare TACO dataset")
+    parser.add_argument("--data_dir", type=str, default="data/taco", help="Directory to save dataset")
+    args = parser.parse_args()
+
+    ann_file = download_taco_dataset(data_dir=args.data_dir)
+    print(f"\n✅ Dataset ready: {ann_file}")
+    print(f"   Classes: {TARGET_CLASSES[1:]}")
+    print(f"   Num classes (with background): {NUM_CLASSES}")
