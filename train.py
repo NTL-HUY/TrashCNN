@@ -21,7 +21,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -186,7 +186,7 @@ def train_one_epoch(
         images = list(images)
         targets = list(targets)
 
-        with torch.autocast('cuda', enabled=args.amp):
+        with torch.autocast(device_type=device.type, enabled=args.amp):
             loss_dict = model(images, targets)
             losses = sum(loss_dict.values())
             losses = losses / args.grad_accum_steps

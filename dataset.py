@@ -244,6 +244,9 @@ class Augmentor:
         self.max_size = max_size
 
     def __call__(self, image, target):
+        # ── Resize (always applied, before any augmentation) ──
+        image, target = self._resize(image, target)
+
         # Random horizontal flip
         if random.random() > 0.5:
             image, target = self._hflip(image, target)
@@ -265,6 +268,33 @@ class Augmentor:
 
         return image, target
 
+    def _resize(self, image, target):
+        w, h = image.size
+
+        # Tính scale factor theo shorter side
+        scale = self.min_size / min(w, h)
+
+        # Nếu longer side vượt max_size → thu nhỏ lại
+        if max(w, h) * scale > self.max_size:
+            scale = self.max_size / max(w, h)
+
+        new_w = int(round(w * scale))
+        new_h = int(round(h * scale))
+
+        image = TF.resize(image, [new_h, new_w])
+
+        # Scale bounding boxes theo cùng tỉ lệ
+        if len(target["boxes"]) > 0:
+            boxes = target["boxes"].clone().float()
+            boxes[:, [0, 2]] *= (new_w / w)   # x1, x2
+            boxes[:, [1, 3]] *= (new_h / h)   # y1, y2
+            # Clamp để tránh out-of-bound sau khi làm tròn số
+            boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(0, new_w)
+            boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(0, new_h)
+            target["boxes"] = boxes
+
+        return image, target
+
     def _hflip(self, image, target):
         w, _ = image.size
         image = TF.hflip(image)
@@ -274,14 +304,28 @@ class Augmentor:
         return image, target
 
 
+def resize_image(image: "Image.Image", target: dict, min_size: int = 800, max_size: int = 1333):
+    w, h = image.size
+    scale = min_size / min(w, h)
+    if max(w, h) * scale > max_size:
+        scale = max_size / max(w, h)
+    new_w = int(round(w * scale))
+    new_h = int(round(h * scale))
+    image = TF.resize(image, [new_h, new_w])
+    if len(target["boxes"]) > 0:
+        boxes = target["boxes"].clone().float()
+        boxes[:, [0, 2]] *= (new_w / w)
+        boxes[:, [1, 3]] *= (new_h / h)
+        boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(0, new_w)
+        boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(0, new_h)
+        target["boxes"] = boxes
+    return image, target
+
+
 def get_transform(train: bool):
     """Returns transform pipeline."""
     transforms = []
     transforms.append(T.ToTensor())
-    transforms.append(T.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    ))
     return T.Compose(transforms)
 
 
@@ -396,9 +440,11 @@ class TACODataset(Dataset):
             "iscrowd": iscrowd,
         }
 
-        # Augmentation (train only)
+        # Resize + Augmentation
         if self.augmentor is not None and len(target["boxes"]) > 0:
             image, target = self.augmentor(image, target)
+        else:
+            image, target = resize_image(image, target, min_size=800, max_size=1333)
 
         if self.transforms is not None:
             image = self.transforms(image)
