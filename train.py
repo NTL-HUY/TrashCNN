@@ -21,7 +21,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -186,7 +186,7 @@ def train_one_epoch(
         images = list(images)
         targets = list(targets)
 
-        with autocast(enabled=args.amp):
+        with torch.autocast('cuda', enabled=args.amp):
             loss_dict = model(images, targets)
             losses = sum(loss_dict.values())
             losses = losses / args.grad_accum_steps
@@ -208,265 +208,8 @@ def train_one_epoch(
         # TensorBoard step-level
         if global_step % 50 == 0:
             for k, v in loss_dict.items():
-                writer.add_scalar(f"train_step/{k}", float(v), global_step)
-            writer.add_scalar("train_step/total_loss", float(sum(loss_dict.values())), global_step)
-            lr_now = optimizer.param_groups[0]["lr"]
-            writer.add_scalar("train_step/lr", lr_now, global_step)
-
-        # Update progress bar
-        lr_now = optimizer.param_groups[0]["lr"]
-        pbar.set_postfix({
-            "loss": f"{loss_meters.meters['total'].avg:.4f}",
-            "cls": f"{loss_meters.meters['loss_classifier'].avg:.4f}",
-            "reg": f"{loss_meters.meters['loss_box_reg'].avg:.4f}",
-            "rpn": f"{loss_meters.meters['loss_objectness'].avg:.4f}",
-            "lr": f"{lr_now:.2e}",
-        }, refresh=False)
-
-    return loss_meters.averages(), global_step
-
-
-# ─────────────────────────────────────────────
-# Validation
-# ─────────────────────────────────────────────
-@torch.no_grad()
-def evaluate(
-        model,
-        loader,
-        device,
-        epoch: int,
-        total_epochs: int,
-        logger: logging.Logger,
-) -> dict:
-    model.eval()
-    metric_logger = MetricLogger(num_classes=NUM_CLASSES, class_names=TARGET_CLASSES)
-
-    desc = f"Epoch [{epoch:3d}/{total_epochs}]   Val"
-    pbar = tqdm(loader, desc=desc, dynamic_ncols=True, leave=True)
-
-    for images, targets in pbar:
-        images = [img.to(device, non_blocking=True) for img in images]
-        targets_cpu = [{k: v for k, v in t.items()} for t in targets]
-
-        outputs = model(images)
-        outputs_cpu = [{k: v.cpu() for k, v in o.items()} for o in outputs]
-
-        metric_logger.update(outputs_cpu, targets_cpu)
-        pbar.set_postfix({"computing": "mAP..."}, refresh=False)
-
-    metrics = metric_logger.compute()
-    pbar.set_postfix({
-        "mAP": f"{metrics['mAP']:.4f}",
-        "mAP@50": f"{metrics['mAP_50']:.4f}",
-    }, refresh=True)
-    return metrics
-
-
-# ─────────────────────────────────────────────
-# Main Training Loop
-# ─────────────────────────────────────────────
-def main():
-    args = parse_args()
-    set_seed(args.seed)
-
-    # ── Device ──
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # ── Logging ──
-    Path(args.log_dir).mkdir(parents=True, exist_ok=True)
-    logger = setup_logger(log_dir=args.log_dir, name="train")
-    writer = SummaryWriter(log_dir=args.log_dir)
-    logger.info(f"Device  : {device}")
-    if device.type == "cuda":
-        logger.info(f"GPU     : {torch.cuda.get_device_name(0)}")
-        logger.info(f"VRAM    : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
-
-    # ── Dataset ──
-    ann_file = args.ann_file
-    if ann_file is None:
-        if not args.skip_download:
-            logger.info("Downloading / verifying TACO dataset...")
-            ann_file = download_taco_dataset(data_dir=args.data_dir)
-        else:
-            ann_file = str(Path(args.data_dir) / "annotations_filtered.json")
-            if not Path(ann_file).exists():
-                raise FileNotFoundError(
-                    f"Annotation file not found: {ann_file}. "
-                    "Run without --skip_download to download dataset."
-                )
-
-    logger.info(f"Annotations: {ann_file}")
-    train_loader, val_loader, test_loader = build_dataloaders(
-        ann_file=ann_file,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        train_ratio=args.train_ratio,
-        val_ratio=args.val_ratio,
-        seed=args.seed,
-    )
-    logger.info(
-        f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)} | Test batches: {len(test_loader)}")
-
-    # ── Model ──
-    logger.info(
-        'Building Faster R-CNN (ResNe"--ann_file",     type=str,   default=None,         help="Path to filtered annotations JSON (auto-set if not given)')
-    data.add_argument("--train_ratio", type=float, default=0.8, help="Fraction for training split")
-    data.add_argument("--val_ratio", type=float, default=0.1, help="Fraction for validation split")
-    data.add_argument("--skip_download", action="store_true", help="Skip dataset download (use existing data)")
-
-    # ── Training ──
-    train = parser.add_argument_group("Training")
-    train.add_argument("--num_epochs", type=int, default=50, help="Total training epochs")
-    train.add_argument("--batch_size", type=int, default=4, help="Training batch size")
-    train.add_argument("--num_workers", type=int, default=4, help="DataLoader worker processes")
-    train.add_argument("--seed", type=int, default=42, help="Random seed")
-    train.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
-    train.add_argument("--grad_accum_steps", type=int, default=1, help="Gradient accumulation steps")
-    train.add_argument("--grad_clip", type=float, default=5.0, help="Max gradient norm for clipping")
-    train.add_argument("--amp", action="store_true", help="Use automatic mixed precision (AMP)")
-    train.add_argument("--val_every", type=int, default=1, help="Run validation every N epochs")
-
-    # ── Optimizer ──
-    optim = parser.add_argument_group("Optimizer")
-    optim.add_argument("--optimizer", type=str, default="sgd", choices=["sgd", "adamw"], help="Optimizer type")
-    optim.add_argument("--lr", type=float, default=0.01, help="Base learning rate")
-    optim.add_argument("--momentum", type=float, default=0.9, help="SGD momentum")
-    optim.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay (L2 regularization)")
-    optim.add_argument("--warmup_epochs", type=int, default=3, help="Warmup epochs for LR schedule")
-    optim.add_argument("--min_lr", type=float, default=1e-6, help="Minimum LR at end of cosine schedule")
-
-    # ── Model ──
-    model_args = parser.add_argument_group("Model")
-    model_args.add_argument("--min_size", type=int, default=800, help="Minimum image size (resize shorter side)")
-    model_args.add_argument("--max_size", type=int, default=1333, help="Maximum image size")
-    model_args.add_argument("--rpn_nms_thresh", type=float, default=0.7, help="RPN NMS threshold")
-    model_args.add_argument("--box_nms_thresh", type=float, default=0.5, help="Box NMS threshold")
-    model_args.add_argument("--box_score_thresh", type=float, default=0.05, help="Box score threshold")
-    model_args.add_argument("--box_detections", type=int, default=100, help="Max detections per image")
-
-    # ── Early Stopping ──
-    es = parser.add_argument_group("Early Stopping")
-    es.add_argument("--early_stop_patience", type=int, default=15, help="Patience epochs for early stopping")
-    es.add_argument("--early_stop_metric", type=str, default="mAP_50", help="Metric to monitor for early stopping")
-
-    # ── Output ──
-    out = parser.add_argument_group("Output")
-    out.add_argument("--weights_dir", type=str, default="weights", help="Directory to save model weights")
-    out.add_argument("--log_dir", type=str, default="runs/train", help="TensorBoard log directory")
-    out.add_argument("--save_metric", type=str, default="mAP_50", help="Metric to track for best model")
-
-    return parser.parse_args()
-
-
-# ─────────────────────────────────────────────
-# Seed
-# ─────────────────────────────────────────────
-def set_seed(seed: int):
-    import random
-    import numpy as np
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
-
-
-# ─────────────────────────────────────────────
-# Build Optimizer
-# ─────────────────────────────────────────────
-def build_optimizer(model: nn.Module, args) -> torch.optim.Optimizer:
-    """Build optimizer with weight decay applied only to non-bias/BN params."""
-    decay_params = []
-    no_decay_params = []
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue
-        if "bias" in name or "bn" in name or "norm" in name:
-            no_decay_params.append(param)
-        else:
-            decay_params.append(param)
-
-    param_groups = [
-        {"params": decay_params, "weight_decay": args.weight_decay},
-        {"params": no_decay_params, "weight_decay": 0.0},
-    ]
-
-    if args.optimizer == "sgd":
-        return torch.optim.SGD(
-            param_groups,
-            lr=args.lr,
-            momentum=args.momentum,
-            nesterov=True,
-        )
-    elif args.optimizer == "adamw":
-        return torch.optim.AdamW(param_groups, lr=args.lr)
-    else:
-        raise ValueError(f"Unknown optimizer: {args.optimizer}")
-
-
-# ─────────────────────────────────────────────
-# Train One Epoch
-# ─────────────────────────────────────────────
-def train_one_epoch(
-        model,
-        optimizer,
-        loader,
-        device,
-        epoch: int,
-        total_epochs: int,
-        scaler: GradScaler,
-        args,
-        writer: SummaryWriter,
-        global_step: int,
-        logger: logging.Logger,
-) -> tuple:
-    model.train()
-    loss_meters = LossMeters()
-    optimizer.zero_grad()
-
-    desc = f"Epoch [{epoch:3d}/{total_epochs}] Train"
-    pbar = tqdm(loader, desc=desc, dynamic_ncols=True, leave=True)
-    step_in_epoch = 0
-
-    for batch_idx, (images, targets) in enumerate(pbar):
-        # Move to device
-        images = [img.to(device, non_blocking=True) for img in images]
-        targets = [{k: v.to(device, non_blocking=True) for k, v in t.items()} for t in targets]
-
-        # Filter out empty targets
-        valid_pairs = [(img, tgt) for img, tgt in zip(images, targets) if len(tgt["boxes"]) > 0]
-        if not valid_pairs:
-            continue
-        images, targets = zip(*valid_pairs)
-        images = list(images)
-        targets = list(targets)
-
-        with autocast(enabled=args.amp):
-            loss_dict = model(images, targets)
-            losses = sum(loss_dict.values())
-            losses = losses / args.grad_accum_steps
-
-        scaler.scale(losses).backward()
-
-        if (batch_idx + 1) % args.grad_accum_steps == 0:
-            # Unscale before clip
-            scaler.unscale_(optimizer)
-            grad_norm = clip_gradients(model, args.grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
-
-        loss_meters.update({k: v.detach() for k, v in loss_dict.items()})
-        step_in_epoch += 1
-        global_step += 1
-
-        # TensorBoard step-level
-        if global_step % 50 == 0:
-            for k, v in loss_dict.items():
-                writer.add_scalar(f"train_step/{k}", float(v), global_step)
-            writer.add_scalar("train_step/total_loss", float(sum(loss_dict.values())), global_step)
+                writer.add_scalar(f"train_step/{k}", v.detach().item(), global_step)
+            writer.add_scalar("train_step/total_loss", sum(loss_dict.values()).detach().item(), global_step)
             lr_now = optimizer.param_groups[0]["lr"]
             writer.add_scalar("train_step/lr", lr_now, global_step)
 
@@ -590,7 +333,7 @@ def main():
     )
 
     # ── AMP Scaler ──
-    scaler = GradScaler(enabled=args.amp)
+    scaler = torch.amp.GradScaler('cuda', enabled=args.amp)
     if args.amp:
         logger.info("Mixed Precision (AMP): ENABLED")
 
@@ -763,7 +506,6 @@ def main():
     logger.info(f"   Best: {args.weights_dir}/best_model.pth")
     logger.info(f"   Last: {args.weights_dir}/last_model.pth")
     logger.info(f"   TensorBoard: tensorboard --logdir {args.log_dir}")
-
 
 if __name__ == "__main__":
     main()

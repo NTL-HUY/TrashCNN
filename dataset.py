@@ -1,26 +1,24 @@
 """
 dataset.py - TACO Dataset Download, Filter & DataLoader
-Filters only 5 classes: plastic, metal, paper, cardboard, glass
-Auto-downloads from TACO GitHub and maps supercategories to 5 target classes
+Filters only 4 classes: plastic, metal, paper, glass
+Auto-downloads from TACO GitHub and maps supercategories to 4 target classes
 """
 
-import os
-import json
 import argparse
-import requests
-import hashlib
+import json
+import logging
+import random
 import time
 from pathlib import Path
-from PIL import Image, ImageFile
+
+import numpy as np
+import requests
 import torch
-from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
-import numpy as np
-import random
-import logging
+from PIL import Image, ImageFile
+from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-import shutil
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -28,58 +26,81 @@ logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
 # TACO → 5-class mapping
-# Maps TACO supercategory names → our 5 classes
+# Maps TACO supercategory names → 5 classes
 # ─────────────────────────────────────────────
 TACO_SUPERCATEGORY_MAP = {
-    # PLASTIC
-    "Plastic bag & wrapper": "plastic",
-    "Plastic container": "plastic",
-    "Plastic utensils": "plastic",
-    "Plastic lid": "plastic",
-    "Plastic straw": "plastic",
-    "Plastic bottle": "plastic",
-    "Other plastic": "plastic",
-    "Plastified paper": "plastic",
-    "Single-use carrier bag": "plastic",
-    "Squeezable tube": "plastic",
-    "Plastic film": "plastic",
-
-    # METAL
-    "Can": "metal",
-    "Metal lid": "metal",
-    "Metal bottle cap": "metal",
+    # --- METAL ---
     "Aluminium foil": "metal",
-    "Other metal": "metal",
-    "Metal": "metal",
-    "Scrap metal": "metal",
+    "Aluminium blister pack": "metal",
+    "Metal bottle cap": "metal",
+    "Food Can": "metal",
+    "Aerosol": "metal",
     "Drink can": "metal",
-    "Food can": "metal",
+    "Metal lid": "metal",
+    "Pop tab": "metal",
+    "Scrap metal": "metal",
 
-    # PAPER
-    "Paper bag": "paper",
-    "Newspaper & magazine": "paper",
-    "Paper cup": "paper",
-    "Tissues": "paper",
-    "Paper": "paper",
-    "Wrapping paper": "paper",
-    "Other paper": "paper",
-    "Carton": "paper",
-
-    # CARDBOARD
-    "Cardboard": "cardboard",
-    "Corrugated cardboard": "cardboard",
-    "Pizza box": "cardboard",
-    "Egg carton": "cardboard",
-
-    # GLASS
+    # --- GLASS ---
     "Glass bottle": "glass",
     "Broken glass": "glass",
+    "Glass cup": "glass",
     "Glass jar": "glass",
-    "Other glass": "glass",
-    "Glass": "glass",
+
+    # --- PAPER ---
+    "Carded blister pack": "paper",
+    "Toilet tube": "paper",
+    "Other carton": "paper",
+    "Egg carton": "paper",
+    "Drink carton": "paper",
+    "Corrugated carton": "paper",
+    "Meal carton": "paper",
+    "Pizza box": "paper",
+    "Paper cup": "paper",
+    "Magazine paper": "paper",
+    "Tissues": "paper",
+    "Wrapping paper": "paper",
+    "Normal paper": "paper",
+    "Paper bag": "paper",
+    "Paper straw": "paper",
+
+    # --- PLASTIC ---
+    "Other plastic bottle": "plastic",
+    "Clear plastic bottle": "plastic",
+    "Plastic bottle cap": "plastic",
+    "Disposable plastic cup": "plastic",
+    "Foam cup": "plastic",
+    "Other plastic cup": "plastic",
+    "Plastic lid": "plastic",
+    "Other plastic": "plastic",
+    "Plastified paper bag": "plastic",
+    "Plastic film": "plastic",
+    "Six pack rings": "plastic",
+    "Garbage bag": "plastic",
+    "Other plastic wrapper": "plastic",
+    "Single-use carrier bag": "plastic",
+    "Polypropylene bag": "plastic",
+    "Crisp packet": "plastic",
+    "Spread tub": "plastic",
+    "Tupperware": "plastic",
+    "Disposable food container": "plastic",
+    "Foam food container": "plastic",
+    "Other plastic container": "plastic",
+    "Plastic glooves": "plastic",
+    "Plastic utensils": "plastic",
+    "Squeezable tube": "plastic",
+    "Plastic straw": "plastic",
+    "Styrofoam piece": "plastic",
+
+    # --- OTHER ---
+    "Battery": "other",
+    "Food waste": "other",
+    "Rope & strings": "other",
+    "Shoe": "other",
+    "Unlabeled litter": "other",
+    "Cigarette": "other",
 }
 
-TARGET_CLASSES = ["background", "plastic", "metal", "paper", "cardboard", "glass"]
+TARGET_CLASSES = ["background", "plastic", "metal", "paper", "glass", "other"]
 CLASS_TO_IDX = {cls: idx for idx, cls in enumerate(TARGET_CLASSES)}
 NUM_CLASSES = len(TARGET_CLASSES)  # 6 (including background)
 
@@ -100,14 +121,14 @@ def download_file(url: str, dest: Path, desc: str = "") -> bool:
             response.raise_for_status()
             total = int(response.headers.get("content-length", 0))
             with open(dest, "wb") as f, tqdm(
-                total=total, unit="B", unit_scale=True, desc=desc or dest.name, leave=False
+                    total=total, unit="B", unit_scale=True, desc=desc or dest.name, leave=False
             ) as bar:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
                     bar.update(len(chunk))
             return True
         except Exception as e:
-            logger.warning(f"Attempt {attempt+1}/3 failed for {url}: {e}")
+            logger.warning(f"Attempt {attempt + 1}/3 failed for {url}: {e}")
             time.sleep(2 ** attempt)
     return False
 
@@ -217,6 +238,7 @@ class Augmentor:
     Custom augmentation pipeline compatible with bounding boxes.
     Applied only during training.
     """
+
     def __init__(self, min_size=800, max_size=1333):
         self.min_size = min_size
         self.max_size = max_size
@@ -273,15 +295,15 @@ class TACODataset(Dataset):
     """
 
     def __init__(
-        self,
-        ann_file: str,
-        split: str = "train",
-        train_ratio: float = 0.8,
-        val_ratio: float = 0.1,
-        transforms=None,
-        augment: bool = False,
-        seed: int = 42,
-        min_area: float = 100.0,   # filter tiny boxes
+            self,
+            ann_file: str,
+            split: str = "train",
+            train_ratio: float = 0.8,
+            val_ratio: float = 0.1,
+            transforms=None,
+            augment: bool = False,
+            seed: int = 42,
+            min_area: float = 100.0,  # filter tiny boxes
     ):
         self.transforms = transforms
         self.augment = augment
@@ -396,12 +418,12 @@ def collate_fn(batch):
 # DataLoader factory
 # ─────────────────────────────────────────────
 def build_dataloaders(
-    ann_file: str,
-    batch_size: int = 4,
-    num_workers: int = 2,
-    train_ratio: float = 0.8,
-    val_ratio: float = 0.1,
-    seed: int = 42,
+        ann_file: str,
+        batch_size: int = 4,
+        num_workers: int = 2,
+        train_ratio: float = 0.8,
+        val_ratio: float = 0.1,
+        seed: int = 42,
 ):
     """Build train/val/test DataLoaders."""
     train_transform = get_transform(train=True)

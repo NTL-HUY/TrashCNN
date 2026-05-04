@@ -17,16 +17,14 @@ Usage:
   python deploy.py --source img.jpg --weights weights/best_model.pth --score_thresh 0.4 --nms_thresh 0.5
 """
 
-import os
-import sys
-import cv2
-import time
-import json
 import argparse
+import json
 import logging
+import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict
 
+import cv2
 import numpy as np
 import torch
 import torchvision.transforms.functional as TF
@@ -38,18 +36,18 @@ from model import build_faster_rcnn
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-
 # ─────────────────────────────────────────────
 # Color palette per class
 # ─────────────────────────────────────────────
 CLASS_COLORS = {
     "background": (128, 128, 128),
-    "plastic":    (255, 100,  50),   # orange
-    "metal":      ( 50, 150, 255),   # blue
-    "paper":      ( 80, 200,  80),   # green
-    "cardboard":  (200, 150,  50),   # brown
-    "glass":      (150,  80, 220),   # purple
+    "plastic": (255, 100, 50),  # orange
+    "metal": (50, 150, 255),  # blue
+    "paper": (80, 200, 80),  # green
+    "glass": (150, 80, 220),  # purple
+    "other": (200, 150, 50),  # brown
 }
+
 
 # ─────────────────────────────────────────────
 # Argument Parser
@@ -62,53 +60,53 @@ def parse_args():
 
     # ── Input ──
     inp = parser.add_argument_group("Input")
-    inp.add_argument("--source",      type=str, required=True,
+    inp.add_argument("--source", type=str, required=True,
                      help="Path to image file, image folder, or video file")
-    inp.add_argument("--weights",     type=str, default="weights/best_model.pth",
+    inp.add_argument("--weights", type=str, default="weights/best_model.pth",
                      help="Path to model weights (.pth)")
-    inp.add_argument("--extensions",  type=str, nargs="+",
+    inp.add_argument("--extensions", type=str, nargs="+",
                      default=[".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"],
                      help="Image file extensions to process (for folder input)")
 
     # ── Model ──
     model_args = parser.add_argument_group("Model")
-    model_args.add_argument("--score_thresh",   type=float, default=0.4,
+    model_args.add_argument("--score_thresh", type=float, default=0.4,
                             help="Minimum confidence score for detections")
-    model_args.add_argument("--nms_thresh",     type=float, default=0.5,
+    model_args.add_argument("--nms_thresh", type=float, default=0.5,
                             help="NMS IoU threshold")
-    model_args.add_argument("--max_detections", type=int,   default=100,
+    model_args.add_argument("--max_detections", type=int, default=100,
                             help="Maximum number of detections per image")
-    model_args.add_argument("--min_size",       type=int,   default=800,
+    model_args.add_argument("--min_size", type=int, default=800,
                             help="Minimum image resize dimension")
-    model_args.add_argument("--max_size",       type=int,   default=1333,
+    model_args.add_argument("--max_size", type=int, default=1333,
                             help="Maximum image resize dimension")
 
     # ── Device ──
     dev = parser.add_argument_group("Device")
-    dev.add_argument("--device",     type=str, default=None,
+    dev.add_argument("--device", type=str, default=None,
                      help="Device (cuda / cpu). Auto-detected if not specified.")
-    dev.add_argument("--num_workers",type=int, default=0,
+    dev.add_argument("--num_workers", type=int, default=0,
                      help="DataLoader workers (0 = main thread)")
 
     # ── Output ──
     out = parser.add_argument_group("Output")
-    out.add_argument("--output_dir",    type=str,   default="predictions",
+    out.add_argument("--output_dir", type=str, default="predictions",
                      help="Directory to save prediction outputs")
-    out.add_argument("--save_json",     action="store_true",
+    out.add_argument("--save_json", action="store_true",
                      help="Save predictions as JSON")
-    out.add_argument("--save_video",    action="store_true",
+    out.add_argument("--save_video", action="store_true",
                      help="Save annotated video (for video input)")
     out.add_argument("--no_save_image", action="store_true",
                      help="Do not save annotated images (only display/JSON)")
-    out.add_argument("--show",          action="store_true",
+    out.add_argument("--show", action="store_true",
                      help="Display predictions in window (requires display)")
-    out.add_argument("--hide_labels",   action="store_true",
+    out.add_argument("--hide_labels", action="store_true",
                      help="Hide class labels on boxes")
-    out.add_argument("--hide_conf",     action="store_true",
+    out.add_argument("--hide_conf", action="store_true",
                      help="Hide confidence scores on boxes")
-    out.add_argument("--line_width",    type=int,   default=2,
+    out.add_argument("--line_width", type=int, default=2,
                      help="Bounding box line width")
-    out.add_argument("--font_size",     type=int,   default=14,
+    out.add_argument("--font_size", type=int, default=14,
                      help="Label font size")
 
     return parser.parse_args()
@@ -136,7 +134,7 @@ def load_model(weights_path: str, device: torch.device, args) -> torch.nn.Module
     # Print training metrics if available
     metrics = ckpt.get("metrics", {})
     if metrics:
-        logger.info(f"Loaded checkpoint | epoch={ckpt.get('epoch','?')} | {metrics}")
+        logger.info(f"Loaded checkpoint | epoch={ckpt.get('epoch', '?')} | {metrics}")
 
     return model
 
@@ -155,16 +153,16 @@ def preprocess_image(pil_image: Image.Image) -> torch.Tensor:
 # ─────────────────────────────────────────────
 @torch.no_grad()
 def predict(
-    model: torch.nn.Module,
-    image_tensor: torch.Tensor,
-    device: torch.device,
+        model: torch.nn.Module,
+        image_tensor: torch.Tensor,
+        device: torch.device,
 ) -> Dict:
     """Run inference on a single image tensor."""
     inputs = [image_tensor.to(device)]
     outputs = model(inputs)
     pred = outputs[0]
     return {
-        "boxes":  pred["boxes"].cpu().numpy(),
+        "boxes": pred["boxes"].cpu().numpy(),
         "labels": pred["labels"].cpu().numpy(),
         "scores": pred["scores"].cpu().numpy(),
     }
@@ -174,39 +172,39 @@ def predict(
 # Visualization
 # ─────────────────────────────────────────────
 def draw_predictions(
-    pil_image: Image.Image,
-    predictions: Dict,
-    score_thresh: float = 0.4,
-    hide_labels: bool = False,
-    hide_conf: bool = False,
-    line_width: int = 2,
-    font_size: int = 14,
+        pil_image: Image.Image,
+        predictions: Dict,
+        score_thresh: float = 0.4,
+        hide_labels: bool = False,
+        hide_conf: bool = False,
+        line_width: int = 2,
+        font_size: int = 14,
 ) -> Image.Image:
     """Draw bounding boxes and labels on a PIL image."""
     image = pil_image.copy()
-    draw  = ImageDraw.Draw(image)
+    draw = ImageDraw.Draw(image)
 
     # Try to load a font; fall back to default
     try:
-        font  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
         small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", max(font_size - 2, 10))
     except Exception:
-        font  = ImageFont.load_default()
+        font = ImageFont.load_default()
         small = font
 
-    boxes  = predictions["boxes"]
+    boxes = predictions["boxes"]
     labels = predictions["labels"]
     scores = predictions["scores"]
 
     # Sort by score descending for better visualization
-    order  = np.argsort(scores)[::-1]
+    order = np.argsort(scores)[::-1]
     boxes, labels, scores = boxes[order], labels[order], scores[order]
 
     for box, label, score in zip(boxes, labels, scores):
         if score < score_thresh:
             continue
         cls_name = TARGET_CLASSES[int(label)] if int(label) < len(TARGET_CLASSES) else "unknown"
-        color    = CLASS_COLORS.get(cls_name, (255, 255, 255))
+        color = CLASS_COLORS.get(cls_name, (255, 255, 255))
         x1, y1, x2, y2 = map(int, box)
 
         # Draw bounding box
@@ -238,16 +236,16 @@ def draw_predictions(
 
 
 def add_summary_overlay(
-    pil_image: Image.Image,
-    predictions: Dict,
-    score_thresh: float,
-    inference_ms: float,
+        pil_image: Image.Image,
+        predictions: Dict,
+        score_thresh: float,
+        inference_ms: float,
 ) -> Image.Image:
     """Add a semi-transparent summary box showing detection counts."""
     image = pil_image.copy()
-    draw  = ImageDraw.Draw(image, "RGBA")
+    draw = ImageDraw.Draw(image, "RGBA")
 
-    boxes  = predictions["boxes"]
+    boxes = predictions["boxes"]
     labels = predictions["labels"]
     scores = predictions["scores"]
 
@@ -272,8 +270,8 @@ def add_summary_overlay(
 
     x, y, pad = 10, 10, 8
     line_h = 18
-    box_h  = len(lines) * line_h + 2 * pad
-    box_w  = 220
+    box_h = len(lines) * line_h + 2 * pad
+    box_w = 220
     draw.rectangle([x, y, x + box_w, y + box_h], fill=(0, 0, 0, 160))
     for i, line in enumerate(lines):
         draw.text((x + pad, y + pad + i * line_h), line, fill=(255, 255, 255), font=font)
@@ -285,11 +283,11 @@ def add_summary_overlay(
 # Image Inference
 # ─────────────────────────────────────────────
 def process_image(
-    model,
-    image_path: Path,
-    device: torch.device,
-    args,
-    output_dir: Path,
+        model,
+        image_path: Path,
+        device: torch.device,
+        args,
+        output_dir: Path,
 ) -> Dict:
     pil_image = Image.open(image_path).convert("RGB")
     img_tensor = preprocess_image(pil_image)
@@ -317,17 +315,17 @@ def process_image(
     annotated = add_summary_overlay(annotated, predictions, args.score_thresh, inference_ms)
 
     result = {
-        "file":         str(image_path),
+        "file": str(image_path),
         "inference_ms": round(inference_ms, 1),
-        "detections":   [],
+        "detections": [],
     }
     for box, label, score in zip(predictions["boxes"], predictions["labels"], predictions["scores"]):
         if score < args.score_thresh:
             continue
         result["detections"].append({
-            "class":  TARGET_CLASSES[int(label)],
-            "score":  round(float(score), 4),
-            "box":    [round(float(x), 1) for x in box],
+            "class": TARGET_CLASSES[int(label)],
+            "score": round(float(score), 4),
+            "box": [round(float(x), 1) for x in box],
         })
 
     # Save
@@ -348,20 +346,20 @@ def process_image(
 # Video Inference
 # ─────────────────────────────────────────────
 def process_video(
-    model,
-    video_path: Path,
-    device: torch.device,
-    args,
-    output_dir: Path,
+        model,
+        video_path: Path,
+        device: torch.device,
+        args,
+        output_dir: Path,
 ) -> Dict:
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
 
-    fps    = int(cap.get(cv2.CAP_PROP_FPS))
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     logger.info(f"Video: {video_path.name} | {width}x{height} @ {fps}fps | {total} frames")
 
@@ -372,8 +370,8 @@ def process_video(
         writer = cv2.VideoWriter(str(out_video_path), fourcc, fps, (width, height))
         logger.info(f"Saving video → {out_video_path}")
 
-    frame_idx      = 0
-    total_ms       = 0.0
+    frame_idx = 0
+    total_ms = 0.0
     all_detections = []
 
     from tqdm import tqdm
@@ -384,7 +382,7 @@ def process_video(
         if not ret:
             break
 
-        pil_frame  = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         img_tensor = preprocess_image(pil_frame)
 
         t0 = time.time()
@@ -415,7 +413,7 @@ def process_video(
 
         frame_idx += 1
         pbar.update(1)
-        pbar.set_postfix({"fps": f"{1000/max(ms,1):.1f}", "ms": f"{ms:.0f}"})
+        pbar.set_postfix({"fps": f"{1000 / max(ms, 1):.1f}", "ms": f"{ms:.0f}"})
 
     cap.release()
     pbar.close()
@@ -427,7 +425,7 @@ def process_video(
     avg_ms = total_ms / max(frame_idx, 1)
     logger.info(
         f"Video done: {frame_idx} frames | "
-        f"Avg inference: {avg_ms:.1f}ms ({1000/max(avg_ms,1):.1f} FPS)"
+        f"Avg inference: {avg_ms:.1f}ms ({1000 / max(avg_ms, 1):.1f} FPS)"
     )
     return {"file": str(video_path), "frames": frame_idx, "avg_inference_ms": round(avg_ms, 1)}
 

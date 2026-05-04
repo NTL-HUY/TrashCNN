@@ -1,6 +1,6 @@
 # 🗑️ Waste Detection & Classification
 
-Faster R-CNN với ResNet-50 + FPN train từ đầu (không dùng pretrained weights) để phát hiện và phân loại rác thải thành 5 lớp: **plastic, metal, paper, cardboard, glass**.
+Faster R-CNN với ResNet-50 + FPN train từ đầu (không dùng pretrained weights) để phát hiện và phân loại rác thải thành 5 lớp: **plastic, metal, paper, glass, other**.
 
 ---
 
@@ -195,15 +195,14 @@ python dataset.py --data_dir data/taco
 
 ## 📊 Classes & Colors
 
-| Class | ID | Color (RGB) |
-|-------|----|-------------|
-| background | 0 | gray |
-| plastic | 1 | orange (255,100,50) |
-| metal | 2 | blue (50,150,255) |
-| paper | 3 | green (80,200,80) |
-| cardboard | 4 | brown (200,150,50) |
-| glass | 5 | purple (150,80,220) |
-
+| Class      | ID | Color (RGB) |
+|------------|----|-------------|
+| background | 0  | gray |
+| plastic    | 1  | orange (255,100,50) |
+| metal      | 2  | blue (50,150,255) |
+| paper      | 3  | green (80,200,80) |
+| glass      | 4  | purple (150,80,220) |
+| other      | 5  | brown (200,150,50) |
 ---
 
 ## 🚀 Recommended Settings cho T4 GPU (Colab)
@@ -242,7 +241,7 @@ python train.py \
 Mỗi epoch sẽ in ra:
 ```
 Epoch  5/50 | Loss: 0.8234 | mAP: 0.3412 | mAP@50: 0.5812 | mAP@75: 0.2901 | LR: 9.50e-03 | Time: 4m 23s ← BEST
-  Per-class: AP_plastic: 0.612 | AP_metal: 0.534 | AP_paper: 0.489 | AP_cardboard: 0.471 | AP_glass: 0.398
+  Per-class: AP_plastic: 0.612 | AP_metal: 0.534 | AP_paper: 0.489 | AP_glass: 0.398 | AP_other: 0.471
 ```
 
 TensorBoard theo dõi:
