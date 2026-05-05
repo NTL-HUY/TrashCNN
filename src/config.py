@@ -20,12 +20,10 @@ LOG_DIR         = os.path.join(ROOT_DIR, "logs")
 # ---------------------------------------------------------------------------
 # Tiền xử lý ảnh
 # ---------------------------------------------------------------------------
-# TACO có ảnh rất lớn (thường 3-5k px). Giới hạn cạnh dài ≤ MAX_SIZE
-# để tránh OOM và tăng tốc training.
-IMAGE_MAX_SIZE  = 800   # px – cạnh dài tối đa sau resize
-IMAGE_MIN_SIZE  = 600   # px – cạnh ngắn tối thiểu (FasterRCNN dùng)
-MEAN            = [0.485, 0.456, 0.406]   # ImageNet mean
-STD             = [0.229, 0.224, 0.225]   # ImageNet std
+IMAGE_MAX_SIZE  = 800
+IMAGE_MIN_SIZE  = 600
+MEAN            = [0.485, 0.456, 0.406]
+STD             = [0.229, 0.224, 0.225]
 
 # ---------------------------------------------------------------------------
 # Dataset split
@@ -38,28 +36,26 @@ RANDOM_SEED = 42
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
-BATCH_SIZE      = 2          # nhỏ vì ảnh lớn + backbone bị đóng băng
-NUM_EPOCHS      = 50
-NUM_WORKERS     = 4
-
-# Chỉ train RPN + ROI head (backbone đã đóng băng)
-LEARNING_RATE   = 0.005
-MOMENTUM        = 0.9
-WEIGHT_DECAY    = 0.0005
-LR_STEP_SIZE    = 10         # giảm LR sau mỗi N epoch
-LR_GAMMA        = 0.1
+BATCH_SIZE   = 2
+NUM_EPOCHS   = 50
+NUM_WORKERS  = 4
+FREEZE_BACKBONE     = False
+PRETRAINED_BACKBONE = True
+LEARNING_RATE          = 0.005
+BACKBONE_LEARNING_RATE = 0.0005
+MOMENTUM               = 0.9
+WEIGHT_DECAY           = 0.0005
+LR_STEP_SIZE = 8
+LR_GAMMA     = 0.5
 
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
-NUM_CLASSES         = 6      # 5 superclass + 1 background (index 0)
-FREEZE_BACKBONE     = True   # Feature Extraction
-PRETRAINED_BACKBONE = True   # Dùng trọng số ImageNet cho backbone
+NUM_CLASSES = 6   # 5 superclass + 1 background (index 0)
 
 # ---------------------------------------------------------------------------
 # Superclass mapping
 # ---------------------------------------------------------------------------
-# Index 0 luôn là background (quy ước của FasterRCNN/torchvision)
 SUPERCLASS_NAMES = {
     0: "background",
     1: "plastic",
@@ -69,7 +65,6 @@ SUPERCLASS_NAMES = {
     5: "other",
 }
 
-# Màu BGR để vẽ bounding box khi visualize (OpenCV)
 SUPERCLASS_COLORS = {
     0: (128, 128, 128),   # background – xám
     1: (0,   165, 255),   # plastic    – cam
@@ -82,8 +77,6 @@ SUPERCLASS_COLORS = {
 # ---------------------------------------------------------------------------
 # Mapping: tên category TACO (lowercase) → superclass index
 # ---------------------------------------------------------------------------
-# Các category TACO được lấy từ annotations.json (trường "name").
-# Nếu tên category không có trong dict này → mặc định về 5 ("other").
 TACO_TO_SUPERCLASS: dict[str, int] = {
     # 1: plastic
     "other plastic bottle": 1,
@@ -153,5 +146,5 @@ TACO_TO_SUPERCLASS: dict[str, int] = {
     "rope & strings": 5,
     "shoe": 5,
     "unlabeled litter": 5,
-    "cigarette": 5
+    "cigarette": 5,
 }

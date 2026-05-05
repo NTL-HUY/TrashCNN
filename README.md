@@ -248,7 +248,7 @@ Tensor [C, H, W] → FasterRCNN
 ```python
 IMAGE_MAX_SIZE  = 800    # Resize xuống nếu cạnh dài > giá trị này
 IMAGE_MIN_SIZE  = 600    # Resize lên nếu cạnh ngắn < giá trị này
-FREEZE_BACKBONE = True   # True = Feature Extraction (không fine-tune)
+FREEZE_BACKBONE = True   # True = Feature Extraction
 BATCH_SIZE      = 2      # Tăng nếu VRAM đủ lớn
 NUM_EPOCHS      = 30
 LEARNING_RATE   = 0.005

@@ -18,15 +18,54 @@ from src.config import SUPERCLASS_NAMES
 
 
 # ---------------------------------------------------------------------------
+# Score diagnostic – kiểm tra phân phối confidence trước khi eval
+# ---------------------------------------------------------------------------
+
+def score_diagnostic(
+    model:  torch.nn.Module,
+    dataloader: DataLoader,
+    device: torch.device,
+    n_batches: int = 30,
+) -> None:
+    model.eval()
+    all_scores = []
+
+    with torch.no_grad():
+        for batch_idx, (images, _) in enumerate(dataloader):
+            if batch_idx >= n_batches:
+                break
+            images  = [img.to(device) for img in images]
+            outputs = model(images)
+            for out in outputs:
+                all_scores.extend(out["scores"].cpu().tolist())
+
+    total = len(all_scores)
+    if total == 0:
+        print("[Diagnostic] Model không tạo ra prediction nào cả!")
+        print("             Kiểm tra lại checkpoint hoặc xem model có load đúng không.")
+        return
+
+    print(f"\n[Diagnostic] Score distribution ({n_batches} batches, "
+          f"{total} raw predictions):")
+    for thresh in [0.01, 0.05, 0.10, 0.20, 0.30, 0.50]:
+        count = sum(1 for s in all_scores if s >= thresh)
+        pct   = 100 * count / total
+        flag  = "  ← threshold hiện tại" if thresh == 0.30 else ""
+        print(f"    score >= {thresh:.2f} : {count:>5} predictions  "
+              f"({pct:5.1f}%){flag}")
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Evaluate
 # ---------------------------------------------------------------------------
 
 def evaluate(
-    model:      torch.nn.Module,
-    dataloader: DataLoader,
-    device:     torch.device,
-    iou_type:   str = "bbox",
-    score_threshold: float = 0.3,
+    model:           torch.nn.Module,
+    dataloader:      DataLoader,
+    device:          torch.device,
+    iou_type:        str   = "bbox",
+    score_threshold: float = 0.05,
 ) -> dict:
     """
     Đánh giá model trên một DataLoader, trả về kết quả mAP.
@@ -50,14 +89,16 @@ def evaluate(
     )
     metric.to(device)
 
-    print("[Eval] Đang thu thập predictions ...")
+    total_preds = 0
+    total_gts   = 0
+
+    print(f"[Eval] Đang thu thập predictions (score_threshold={score_threshold}) ...")
     with torch.no_grad():
         for batch_idx, (images, targets) in enumerate(dataloader):
             images = [img.to(device) for img in images]
 
             # Forward pass → list of prediction dicts
             outputs = model(images)
-            # outputs[i] = {"boxes": Tensor, "labels": Tensor, "scores": Tensor}
 
             # ── Lọc theo score threshold ──────────────────────────────
             preds = []
@@ -68,6 +109,7 @@ def evaluate(
                     "scores": out["scores"][keep].cpu(),
                     "labels": out["labels"][keep].cpu(),
                 })
+                total_preds += int(keep.sum())
 
             # ── Ground truths ─────────────────────────────────────────
             gts = []
@@ -76,11 +118,31 @@ def evaluate(
                     "boxes":  tgt["boxes"].cpu(),
                     "labels": tgt["labels"].cpu(),
                 })
+                total_gts += len(tgt["boxes"])
 
             metric.update(preds, gts)
 
             if (batch_idx + 1) % 50 == 0:
-                print(f"[Eval] Đã xử lý {batch_idx + 1}/{len(dataloader)} batch")
+                print(f"[Eval] Đã xử lý {batch_idx + 1}/{len(dataloader)} batch  "
+                      f"| preds so far: {total_preds}")
+
+    # ── Cảnh báo khi không có prediction nào ─────────────────────────────
+    print(f"\n[Eval] Tổng ground truth boxes : {total_gts}")
+    print(f"[Eval] Tổng prediction boxes   : {total_preds} "
+          f"(threshold={score_threshold})")
+
+    if total_preds == 0:
+        print(
+            "\n[Eval] ⚠  KHÔNG CÓ PREDICTION NÀO QUA THRESHOLD!\n"
+            f"          score_threshold={score_threshold} quá cao.\n"
+            "          Chạy score_diagnostic() để xem phân phối confidence,\n"
+            "          rồi hạ threshold xuống (ví dụ: --score-thresh 0.01)."
+        )
+    elif total_preds < total_gts * 0.1:
+        print(
+            f"[Eval] ⚠  Số prediction ({total_preds}) << ground truth ({total_gts}).\n"
+            "          Có thể threshold vẫn còn cao. Thử --score-thresh 0.01."
+        )
 
     # ── Tính mAP ─────────────────────────────────────────────────────────
     print("[Eval] Đang tính mAP ...")
