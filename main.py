@@ -95,7 +95,7 @@ def run_train(args) -> None:
     print(f"  Epochs  : {args.epochs}")
     print(f"  Batch   : {args.batch_size}")
     print(f"  Device  : {device}")
-    print(f"  Backbone: {'FROZEN (Feature Extraction)' if FREEZE_BACKBONE else 'TRAINABLE (Fine-tuning)'}")
+    print(f"  Backbone: {'FROZEN' if FREEZE_BACKBONE else 'TRAINABLE'}")
     print(f"{'='*55}\n")
 
     # ── Training loop ─────────────────────────────────────────────────────

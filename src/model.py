@@ -77,7 +77,7 @@ def _freeze_backbone(model: nn.Module) -> None:
         param.requires_grad = False
         frozen_count += param.numel()
 
-    print(f"[Model] Backbone đã được ĐÓNG BĂNG "
+    print(f"[Model] Backbone frozen "
           f"({frozen_count:,} tham số không được train)")
 
 

@@ -39,7 +39,7 @@ RANDOM_SEED = 42
 # Training
 # ---------------------------------------------------------------------------
 BATCH_SIZE      = 2          # nhỏ vì ảnh lớn + backbone bị đóng băng
-NUM_EPOCHS      = 40
+NUM_EPOCHS      = 50
 NUM_WORKERS     = 4
 
 # Chỉ train RPN + ROI head (backbone đã đóng băng)
