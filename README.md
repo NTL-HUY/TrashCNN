@@ -1,263 +1,285 @@
-# 🗑️ Waste Detection & Classification
+# 🗑️ Waste Detection – FasterRCNN + ResNet50 (Transfer Learning)
 
-Faster R-CNN với ResNet-50 + FPN train từ đầu (không dùng pretrained weights) để phát hiện và phân loại rác thải thành 5 lớp: **plastic, metal, paper, glass, other**.
+Dự án phát hiện và phân loại rác thải trong ảnh sử dụng **FasterRCNN** kết hợp **ResNet50-FPN** làm backbone.  
+Dataset: **TACO** (Trash Annotations in Context) – 60 category gốc được remap thành **5 superclass**.
 
 ---
 
-## 📁 Cấu trúc Project
+| Thành phần | Trạng thái | Lý do |
+|---|---|---|
+| **ResNet50 + FPN backbone** | ❄️ ĐÓNG BĂNG (frozen) | Giữ nguyên đặc trưng ImageNet |
+| **RPN** (Region Proposal Network) | 🔥 TRAIN | Học cách đề xuất vùng chứa rác |
+| **ROI Head** (Box Predictor) | 🔥 TRAIN | Học cách phân loại 5 superclass |
+
+---
+
+## 📂 Cấu trúc thư mục
 
 ```
 waste_detection/
-├── dataset.py          # Download TACO, filter 5 class, DataLoader
-├── model.py            # ResNet-50 + FPN + Faster R-CNN (from scratch)
-├── utils.py            # mAP, Checkpoint, EarlyStopping, LR Scheduler
-├── train.py            # Training loop với TensorBoard
-├── deploy.py           # Inference trên ảnh/video
-├── requirements.txt
+│
+├── download.py                  ← (có sẵn) tải TACO dataset
+│
 ├── data/
-│   └── taco/
-│       ├── images/
-│       ├── annotations.json
-│       └── annotations_filtered.json
-├── weights/            # (tự tạo khi train)
-│   ├── best_model.pth
-│   └── last_model.pth
-└── runs/               # (tự tạo khi train)
-    └── train/          # TensorBoard logs
+│   ├── annotations.json         ← (có sẵn) annotation COCO format
+│   ├── batch_1/                 ← ảnh gốc (tải về bằng download.py)
+│   ├── batch_2/
+│   ├── ...
+│   └── processed/               ← ảnh đã resize (tạo bởi preprocess.py)
+│       ├── batch_1/
+│       └── ...
+│
+├── src/                         ← source code chính
+│   ├── __init__.py
+│   ├── config.py                ← ⚙️  MỌI cấu hình: path, hyperparams, class mapping
+│   ├── dataset.py               ← 📦  TACODataset (COCO → 5 superclass)
+│   ├── transforms.py            ← 🖼️  Pipeline tiền xử lý & augmentation
+│   ├── model.py                 ← 🧠  Build FasterRCNN, đóng băng backbone
+│   ├── trainer.py               ← 🏋️  Training & validation loop, EarlyStopping
+│   ├── evaluator.py             ← 📊  Tính mAP (torchmetrics)
+│   └── utils.py                 ← 🔧  DataLoader, LossLogger, visualize
+│
+├── scripts/
+│   ├── preprocess.py            ← ✂️  Resize ảnh TACO → data/processed/
+│   └── visualize.py             ← 🎨  Vẽ bounding box lên ảnh kết quả
+│
+├── checkpoints/                 ← checkpoint được lưu tại đây
+├── logs/                        ← training_log.json, loss_curve.png
+│
+├── main.py                      ← 🚀  Entry point (train / eval / predict)
+└── requirements.txt
 ```
 
 ---
 
-## ⚡ Quick Start (Google Colab T4)
+## 🏷️ Mapping 60 Class TACO → 5 Superclass
 
-### 1. Cài đặt
+| Superclass | Index | Ví dụ category TACO |
+|---|:---:|---|
+| **plastic** | 1 | Bottle, Plastic bag, Straw, Styrofoam, Cup, Lid... |
+| **paper**   | 2 | Paper, Carton, Newspaper, Cardboard, Paper bag... |
+| **metal**   | 3 | Can, Aerosol, Aluminium foil, Scrap metal, Battery... |
+| **glass**   | 4 | Broken glass, Glass bottle, Glass jar... |
+| **other**   | 5 | Cigarette, Rope, Shoe, Unlabeled litter... |
+| background  | 0 | *(reserved bởi FasterRCNN)* |
+
+> Mapping đầy đủ được định nghĩa trong `src/config.py → TACO_TO_SUPERCLASS`.  
+> Bất kỳ category TACO nào không có trong dict sẽ tự động về `other`.
+
+---
+
+## ⚙️ Cài đặt môi trường
+
+### 1. Tạo virtual environment
+
+```bash
+python -m venv venv
+source venv/bin/activate          # Linux/macOS
+venv\Scripts\activate             # Windows
+```
+
+### 2. Cài PyTorch (chọn đúng phiên bản CUDA)
+
+Truy cập https://pytorch.org/get-started/locally/ để lấy lệnh cài phù hợp GPU.  
+Ví dụ CUDA 12.1:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+### 3. Cài các thư viện còn lại
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Download Dataset + Train
+---
+
+## 🚀 Hướng dẫn chạy
+
+### Bước 1 – Tải TACO dataset
 
 ```bash
-# Download TACO dataset và bắt đầu train
-python train.py \
-  --data_dir data/taco \
-  --num_epochs 50 \
-  --batch_size 4 \
-  --num_workers 4 \
-  --lr 0.01 \
-  --amp \
-  --optimizer sgd \
-  --warmup_epochs 3 \
-  --grad_clip 5.0 \
-  --weights_dir weights \
-  --log_dir runs/train
+python download.py
 ```
+Ảnh được tải về `data/batch_1/`, `data/batch_2/`, ...
 
-### 3. Theo dõi TensorBoard
+---
+
+### Bước 2 – Tiền xử lý ảnh *(chạy 1 lần)*
+
+TACO chứa ảnh rất lớn (2000–6000px). Script này resize xuống max 800px và lưu vào `data/processed/`:
 
 ```bash
-tensorboard --logdir runs/train
+python scripts/preprocess.py
 ```
 
-### 4. Inference
+Tùy chọn nâng cao:
 
 ```bash
-# Single image
-python deploy.py \
-  --source path/to/image.jpg \
-  --weights weights/best_model.pth \
-  --score_thresh 0.4
-
-# Folder ảnh
-python deploy.py \
-  --source path/to/images/ \
-  --weights weights/best_model.pth \
-  --output_dir predictions
-
-# Video
-python deploy.py \
-  --source path/to/video.mp4 \
-  --weights weights/best_model.pth \
-  --save_video
+python scripts/preprocess.py \
+  --max-size 800 \     # cạnh dài tối đa (px)
+  --min-size 600 \     # cạnh ngắn tối thiểu (px)
+  --workers 8 \        # số thread song song
+  --quality 90         # JPEG quality
 ```
+
+> Sau bước này `data/processed/` sẽ có cùng cấu trúc với `data/` nhưng ảnh nhỏ hơn đáng kể.
 
 ---
 
-## 🏗️ Kiến trúc Model
-
-```
-Input Image
-    │
-    ▼
-GeneralizedRCNNTransform  (resize 800~1333, normalize)
-    │
-    ▼
-ResNet-50 Backbone (từ scratch)
-  └─ Stem: Conv7x7 → BN → ReLU → MaxPool
-  └─ Layer1 (C2): 3x Bottleneck, stride=1  → 256ch
-  └─ Layer2 (C3): 4x Bottleneck, stride=2  → 512ch
-  └─ Layer3 (C4): 6x Bottleneck, stride=2  → 1024ch
-  └─ Layer4 (C5): 3x Bottleneck, stride=2  → 2048ch
-    │
-    ▼
-Feature Pyramid Network (FPN)
-  └─ P2 (stride 4)  → 256ch
-  └─ P3 (stride 8)  → 256ch
-  └─ P4 (stride 16) → 256ch
-  └─ P5 (stride 32) → 256ch
-  └─ P6 (pooling)   → 256ch
-    │
-    ▼
-Region Proposal Network (RPN)
-  └─ Anchors: sizes=(32,64,128,256,512), ratios=(0.5,1.0,2.0)
-  └─ RPNHead → objectness scores + bbox deltas
-  └─ NMS → ~2000 proposals (train) / 1000 (test)
-    │
-    ▼
-RoI Align (Multi-Scale, 7×7)
-    │
-    ▼
-TwoMLPHead (FC 12544 → 1024 → 1024)
-    │
-    ▼
-FastRCNNPredictor
-  └─ Classification: 6 classes (+ background)
-  └─ Regression    : 6 × 4 bbox deltas
-    │
-    ▼
-Output: boxes, labels, scores
-```
-
----
-
-## 🎛️ Training Flags
-
-### train.py
-
-| Flag | Default | Mô tả |
-|------|---------|-------|
-| `--data_dir` | `data/taco` | Thư mục chứa dataset |
-| `--ann_file` | auto | Path đến file annotations đã filter |
-| `--skip_download` | False | Bỏ qua download (dùng data có sẵn) |
-| `--num_epochs` | 50 | Số epoch train |
-| `--batch_size` | 4 | Batch size |
-| `--num_workers` | 4 | Số worker cho DataLoader |
-| `--seed` | 42 | Random seed |
-| `--resume` | None | Resume từ checkpoint |
-| `--grad_accum_steps` | 1 | Gradient accumulation |
-| `--grad_clip` | 5.0 | Max gradient norm |
-| `--amp` | False | Mixed precision (AMP) |
-| `--val_every` | 1 | Validate mỗi N epoch |
-| `--optimizer` | sgd | `sgd` hoặc `adamw` |
-| `--lr` | 0.01 | Learning rate |
-| `--momentum` | 0.9 | SGD momentum |
-| `--weight_decay` | 1e-4 | L2 regularization |
-| `--warmup_epochs` | 3 | Warmup epochs |
-| `--min_lr` | 1e-6 | LR tối thiểu (cosine end) |
-| `--min_size` | 800 | Resize ngắn nhất |
-| `--max_size` | 1333 | Resize dài nhất |
-| `--early_stop_patience` | 15 | Patience cho early stopping |
-| `--early_stop_metric` | mAP_50 | Metric theo dõi |
-| `--weights_dir` | weights | Thư mục lưu model |
-| `--log_dir` | runs/train | TensorBoard log dir |
-| `--save_metric` | mAP_50 | Metric chọn best model |
-
-### deploy.py
-
-| Flag | Default | Mô tả |
-|------|---------|-------|
-| `--source` | *(required)* | Ảnh / folder / video |
-| `--weights` | weights/best_model.pth | Path đến model |
-| `--score_thresh` | 0.4 | Ngưỡng confidence |
-| `--nms_thresh` | 0.5 | NMS IoU threshold |
-| `--max_detections` | 100 | Max detections/ảnh |
-| `--device` | auto | `cuda` hoặc `cpu` |
-| `--output_dir` | predictions | Thư mục lưu kết quả |
-| `--save_json` | False | Lưu JSON predictions |
-| `--save_video` | False | Lưu video đã annotate |
-| `--no_save_image` | False | Không lưu ảnh kết quả |
-| `--show` | False | Hiển thị cửa sổ preview |
-| `--hide_labels` | False | Ẩn tên class |
-| `--hide_conf` | False | Ẩn confidence score |
-| `--line_width` | 2 | Độ dày bounding box |
-| `--font_size` | 14 | Cỡ chữ nhãn |
-| `--num_workers` | 0 | DataLoader workers |
-
-### dataset.py (standalone)
+### Bước 3 – Training
 
 ```bash
-# Chỉ download dataset
-python dataset.py --data_dir data/taco
+python main.py train
 ```
 
----
-
-## 📊 Classes & Colors
-
-| Class      | ID | Color (RGB) |
-|------------|----|-------------|
-| background | 0  | gray |
-| plastic    | 1  | orange (255,100,50) |
-| metal      | 2  | blue (50,150,255) |
-| paper      | 3  | green (80,200,80) |
-| glass      | 4  | purple (150,80,220) |
-| other      | 5  | brown (200,150,50) |
----
-
-## 🚀 Recommended Settings cho T4 GPU (Colab)
+Tùy chỉnh:
 
 ```bash
-python train.py \
-  --data_dir data/taco \
-  --num_epochs 60 \
-  --batch_size 4 \
-  --num_workers 4 \
-  --lr 0.01 \
-  --optimizer sgd \
-  --momentum 0.9 \
-  --weight_decay 1e-4 \
-  --warmup_epochs 5 \
-  --min_lr 1e-6 \
-  --amp \
-  --grad_clip 5.0 \
-  --grad_accum_steps 2 \
-  --val_every 2 \
-  --early_stop_patience 20 \
-  --save_metric mAP_50 \
-  --weights_dir weights \
-  --log_dir runs/train
+python main.py train \
+  --epochs 30 \         # số epoch
+  --batch-size 2 \      # batch size (nhỏ vì ảnh lớn)
+  --workers 4 \         # DataLoader workers
+  --patience 7 \        # early stopping patience
+  --save-every 5 \      # lưu checkpoint mỗi 5 epoch
+  --print-freq 20       # in log mỗi 20 batch
 ```
 
-> **Ghi chú:**
-> - `--amp` giảm VRAM ~40%, tăng tốc ~30% trên T4
-> - `--grad_accum_steps 2` → effective batch = 8 mà không tốn thêm VRAM
-> - `--val_every 2` tiết kiệm thời gian; mAP tính tốn nhiều hơn loss
+Resume từ checkpoint:
+
+```bash
+python main.py train --resume checkpoints/epoch_015.pth
+```
+
+**Output:**
+- `checkpoints/best.pth` – checkpoint tốt nhất (val loss thấp nhất)
+- `checkpoints/epoch_XXX.pth` – checkpoint theo epoch
+- `logs/training_log.json` – lịch sử loss
+- `logs/loss_curve.png` – đồ thị loss
 
 ---
 
-## 📈 Metrics Hiển thị
+### Bước 4 – Đánh giá (mAP)
 
-Mỗi epoch sẽ in ra:
-```
-Epoch  5/50 | Loss: 0.8234 | mAP: 0.3412 | mAP@50: 0.5812 | mAP@75: 0.2901 | LR: 9.50e-03 | Time: 4m 23s ← BEST
-  Per-class: AP_plastic: 0.612 | AP_metal: 0.534 | AP_paper: 0.489 | AP_glass: 0.398 | AP_other: 0.471
+```bash
+python main.py eval --checkpoint checkpoints/best.pth
 ```
 
-TensorBoard theo dõi:
-- `train_epoch/` — total loss, cls loss, reg loss, rpn loss, lr
-- `train_step/` — step-level losses & lr
-- `val/` — mAP, mAP_50, mAP_75, per-class AP
-- `summary/` — overlay chart loss + mAP
-- `test/` — final test set metrics
+Kết quả mẫu:
+```
+=======================================================
+  KẾT QUẢ ĐÁNH GIÁ (COCO mAP)
+=======================================================
+  mAP  @[0.50:0.95] : 0.3241
+  mAP  @[0.50]      : 0.5812
+  mAP  @[0.75]      : 0.3107
+  mAR  (max 100)    : 0.4520
+-------------------------------------------------------
+  mAP per class:
+    plastic     : 0.4102
+    paper       : 0.3218
+    metal       : 0.2901
+    glass       : 0.2544
+    other       : 0.2441
+=======================================================
+```
 
 ---
 
-## 📝 Notes
+### Bước 5 – Inference ảnh mới
 
-- **Không dùng pretrained weights**: Mọi layer khởi tạo từ Kaiming/Xavier initialization
-- **Augmentation**: horizontal flip, brightness/contrast/saturation/hue jitter
-- **Scheduler**: Linear warmup → Cosine annealing
-- **AMP**: `torch.cuda.amp` để train ổn định trên T4
-- **Gradient clipping**: tránh gradient explosion khi train từ scratch
-- **Dataset split**: 80% train / 10% val / 10% test (cố định với seed)
+```bash
+python main.py predict \
+  --checkpoint checkpoints/best.pth \
+  --image /đường/dẫn/tới/ảnh.jpg \
+  --output output/prediction.jpg \
+  --score-thresh 0.3
+```
+
+---
+
+### Visualize nhiều ảnh từ test set
+
+```bash
+python scripts/visualize.py \
+  --checkpoint checkpoints/best.pth \
+  --n 20 \
+  --output-dir output/visualize
+```
+
+---
+
+## 🧪 Giải thích kỹ thuật
+
+### Tại sao không fine-tune backbone?
+
+| | Chỉ train head | Fine-tuning toàn bộ |
+|---|---|---|
+| **Tốc độ train** | Nhanh hơn 3–5× | Chậm |
+| **Nguy cơ overfitting** | Thấp | Cao nếu dataset nhỏ |
+| **Yêu cầu VRAM** | Thấp hơn | Cao hơn |
+| **mAP kỳ vọng** | Tốt (đủ cho bài toán này) | Có thể tốt hơn nếu đủ data |
+
+Với TACO dataset (~1500 ảnh), **Feature Extraction** là lựa chọn hợp lý để tránh overfitting.
+
+---
+
+### Pipeline xử lý ảnh
+
+```
+Ảnh gốc (3000px+)
+      │
+      ▼ preprocess.py (offline, 1 lần)
+Ảnh đã resize (≤800px, lưu vào disk)
+      │
+      ▼ transforms.py (online, mỗi epoch)
+  [Train]  Resize → RandomHFlip → RandomBrightness → ToTensor → Normalize(ImageNet)
+  [Val]    Resize → ToTensor → Normalize(ImageNet)
+      │
+      ▼
+Tensor [C, H, W] → FasterRCNN
+```
+
+---
+
+### Cấu hình quan trọng trong `src/config.py`
+
+```python
+IMAGE_MAX_SIZE  = 800    # Resize xuống nếu cạnh dài > giá trị này
+IMAGE_MIN_SIZE  = 600    # Resize lên nếu cạnh ngắn < giá trị này
+FREEZE_BACKBONE = True   # True = Feature Extraction (không fine-tune)
+BATCH_SIZE      = 2      # Tăng nếu VRAM đủ lớn
+NUM_EPOCHS      = 30
+LEARNING_RATE   = 0.005
+NUM_CLASSES     = 6      # 5 superclass + 1 background
+```
+
+---
+
+## 🐛 Troubleshooting
+
+**CUDA out of memory:**
+- Giảm `BATCH_SIZE` trong `config.py` xuống 1
+- Giảm `IMAGE_MAX_SIZE` xuống 600 hoặc 640
+
+**Không tìm thấy ảnh khi train:**
+- Đảm bảo đã chạy `download.py` và `scripts/preprocess.py`
+- Kiểm tra `data/processed/` có ảnh chưa
+
+**mAP thấp:**
+- Train thêm epoch (`--epochs 50`)
+- Hạ `--score-thresh` xuống 0.2 khi eval
+- Kiểm tra class distribution bằng `dataset.get_class_distribution()`
+
+---
+
+## 📦 Dependency chính
+
+| Thư viện | Vai trò |
+|---|---|
+| `torch` + `torchvision` | FasterRCNN, ResNet50, training |
+| `torchmetrics` | Tính mAP chuẩn COCO |
+| `Pillow` | Đọc/resize ảnh |
+| `opencv-python` | Vẽ bounding box |
+| `matplotlib` | Đồ thị loss |
