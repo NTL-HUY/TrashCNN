@@ -21,6 +21,12 @@ from typing import Optional
 import torch
 from torch.utils.data import DataLoader
 
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    _TB_AVAILABLE = True
+except ImportError:
+    _TB_AVAILABLE = False
+    SummaryWriter = None
 
 # ---------------------------------------------------------------------------
 # Training – 1 epoch
@@ -33,6 +39,7 @@ def train_one_epoch(
     device:     torch.device,
     epoch:      int,
     print_freq: int = 20,
+    writer:     Optional["SummaryWriter"] = None,
 ) -> dict[str, float]:
     """
     Chạy 1 epoch training.
@@ -44,6 +51,7 @@ def train_one_epoch(
         device:     cuda hoặc cpu
         epoch:      số epoch hiện tại (để log)
         print_freq: in log sau mỗi N batch
+        writer:     SummaryWriter của TensorBoard (None = không ghi TB)
 
     Returns:
         avg_losses: dict {tên_loss: giá_trị_trung_bình} cho cả epoch
@@ -52,6 +60,9 @@ def train_one_epoch(
     total_losses: dict[str, float] = {}
     n_batches = 0
     t_start = time.time()
+
+    batches_per_epoch = len(dataloader)
+    global_batch_start = (epoch - 1) * batches_per_epoch
 
     for batch_idx, (images, targets) in enumerate(dataloader):
         # ── Chuyển dữ liệu lên device ──────────────────────────────────
@@ -83,6 +94,13 @@ def train_one_epoch(
             total_losses[k] = total_losses.get(k, 0.0) + v.item()
         n_batches += 1
 
+        # ── TensorBoard: ghi loss từng batch ──────────────────────────
+        if writer is not None:
+            global_step = global_batch_start + batch_idx
+            for k, v in loss_dict.items():
+                writer.add_scalar(f"Train/batch_{k}", v.item(), global_step)
+            writer.add_scalar("Train/batch_total", losses.item(), global_step)
+
         # ── Log định kỳ ───────────────────────────────────────────────
         if (batch_idx + 1) % print_freq == 0 or (batch_idx + 1) == len(dataloader):
             elapsed = time.time() - t_start
@@ -99,6 +117,15 @@ def train_one_epoch(
     # Trả về loss trung bình cho cả epoch
     avg_losses = {k: v / n_batches for k, v in total_losses.items()}
     avg_losses["total"] = sum(avg_losses.values())
+
+    # ── TensorBoard: ghi loss trung bình cả epoch ─────────────────────
+    if writer is not None:
+        for k, v in avg_losses.items():
+            writer.add_scalar(f"Train/{k}", v, epoch)
+        # Ghi learning rate hiện tại
+        current_lr = optimizer.param_groups[0]["lr"]
+        writer.add_scalar("Train/learning_rate", current_lr, epoch)
+
     return avg_losses
 
 
@@ -111,6 +138,7 @@ def validate(
     dataloader: DataLoader,
     device:     torch.device,
     epoch:      int,
+    writer:     Optional["SummaryWriter"] = None,
 ) -> dict[str, float]:
     """
     Tính validation loss.
@@ -141,6 +169,11 @@ def validate(
 
     loss_str = "  ".join(f"{k}: {v:.4f}" for k, v in avg_losses.items())
     print(f"[Val]   Epoch {epoch:02d}  {loss_str}")
+
+    # ── TensorBoard: ghi validation loss theo epoch ────────────────────
+    if writer is not None:
+        for k, v in avg_losses.items():
+            writer.add_scalar(f"Val/{k}", v, epoch)
 
     return avg_losses
 

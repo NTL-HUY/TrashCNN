@@ -13,6 +13,10 @@ Luồng tổng quát:
   │ 3. main.py eval   → đánh giá trên test set             │
   │ 4. main.py predict → inference ảnh mới                 │
   └─────────────────────────────────────────────────────────┘
+
+TensorBoard:
+  %load_ext tensorboard
+  %tensorboard --logdir logs/tb
 """
 
 import os
@@ -77,9 +81,14 @@ def run_train(args) -> None:
     scheduler = get_lr_scheduler(optimizer)
 
     # ── Logging & Early Stopping ──────────────────────────────────────────
-    logger        = LossLogger(LOG_DIR)
+    logger = LossLogger(
+        log_dir=LOG_DIR,
+        use_tensorboard=not args.no_tensorboard,
+    )
     early_stopper = EarlyStopping(patience=args.patience)
     best_val_loss = float("inf")
+
+    writer = logger.writer
 
     print(f"\n{'='*55}")
     print(f"  BẮT ĐẦU TRAINING")
@@ -97,10 +106,14 @@ def run_train(args) -> None:
         train_losses = train_one_epoch(
             model, optimizer, train_loader, device, epoch,
             print_freq=args.print_freq,
+            writer=writer,
         )
 
         # Validation
-        val_losses = validate(model, val_loader, device, epoch)
+        val_losses = validate(
+            model, val_loader, device, epoch,
+            writer=writer,
+        )
 
         # Update scheduler
         scheduler.step()
@@ -131,6 +144,9 @@ def run_train(args) -> None:
 
     print(f"\n[Main] Training xong! Best val loss: {best_val_loss:.4f}")
     print(f"[Main] Checkpoint tốt nhất: {os.path.join(CHECKPOINT_DIR, 'best.pth')}")
+
+    # ── Đóng TensorBoard writer ───────────────────────────────────────────
+    logger.close()
 
     # Vẽ đồ thị loss
     try:
@@ -207,17 +223,19 @@ def main():
 
     # ── train ──────────────────────────────────────────────────────────
     p_train = subparsers.add_parser("train", help="Bắt đầu training")
-    p_train.add_argument("--epochs",     type=int,   default=NUM_EPOCHS)
-    p_train.add_argument("--batch-size", type=int,   default=BATCH_SIZE)
-    p_train.add_argument("--workers",    type=int,   default=NUM_WORKERS)
-    p_train.add_argument("--patience",   type=int,   default=7,
+    p_train.add_argument("--epochs",          type=int,   default=NUM_EPOCHS)
+    p_train.add_argument("--batch-size",      type=int,   default=BATCH_SIZE)
+    p_train.add_argument("--workers",         type=int,   default=NUM_WORKERS)
+    p_train.add_argument("--patience",        type=int,   default=7,
                          help="Early stopping patience")
-    p_train.add_argument("--save-every", type=int,   default=5,
+    p_train.add_argument("--save-every",      type=int,   default=5,
                          help="Lưu checkpoint mỗi N epoch")
-    p_train.add_argument("--print-freq", type=int,   default=20,
+    p_train.add_argument("--print-freq",      type=int,   default=20,
                          help="In log mỗi N batch")
-    p_train.add_argument("--resume",     type=str,   default=None,
+    p_train.add_argument("--resume",          type=str,   default=None,
                          help="Đường dẫn checkpoint để resume training")
+    p_train.add_argument("--no-tensorboard",  action="store_true",
+                         help="Tắt TensorBoard logging")
 
     # ── eval ───────────────────────────────────────────────────────────
     p_eval = subparsers.add_parser("eval", help="Đánh giá model (mAP)")

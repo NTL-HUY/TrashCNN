@@ -7,6 +7,11 @@ Gồm:
   • plot_losses()           – vẽ đồ thị loss theo epoch
   • visualize_predictions() – vẽ bounding box lên ảnh (dùng OpenCV)
   • seed_everything()       – đảm bảo kết quả reproducible
+  • LossLogger              – ghi log JSON + TensorBoard SummaryWriter
+
+TensorBoard:
+    %load_ext tensorboard
+    %tensorboard --logdir logs/tb
 """
 
 import os
@@ -26,6 +31,13 @@ from src.config import (
 )
 from src.dataset import TACODataset, collate_fn
 from src.transforms import get_train_transforms, get_val_transforms
+
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    _TB_AVAILABLE = True
+except ImportError:
+    _TB_AVAILABLE = False
+    SummaryWriter = None
 
 
 # ---------------------------------------------------------------------------
@@ -134,26 +146,92 @@ def create_data_loaders(
 # ---------------------------------------------------------------------------
 
 class LossLogger:
-    """Lưu và ghi log loss mỗi epoch ra file JSON."""
+    """
+    Lưu và ghi log loss mỗi epoch.
 
-    def __init__(self, log_dir: str = LOG_DIR):
+    • Luôn ghi JSON vào logs/training_log.json  (hành vi cũ, giữ nguyên)
+    • Nếu use_tensorboard=True → tạo SummaryWriter vào logs/tb/
+      rồi ghi scalar Train/* và Val/* để xem qua %tensorboard --logdir logs/tb
+
+    --------------------
+    logger = LossLogger(use_tensorboard=True)
+    #   %load_ext tensorboard
+    #   %tensorboard --logdir logs/tb
+    ...
+    logger.close()
+    """
+
+    def __init__(
+        self,
+        log_dir: str = LOG_DIR,
+        use_tensorboard: bool = True,
+        tb_subdir: str = "tb",
+    ):
         os.makedirs(log_dir, exist_ok=True)
         self.log_path = os.path.join(log_dir, "training_log.json")
         self.history: list[dict] = []
 
-    def record(self, epoch: int, train_losses: dict, val_losses: dict) -> None:
+        self.writer: Optional["SummaryWriter"] = None
+        if use_tensorboard:
+            if not _TB_AVAILABLE:
+                print(
+                    "[LossLogger] ⚠  tensorboard chưa cài. "
+                    "Chạy: pip install tensorboard\n"
+                    "            TensorBoard log bị tắt."
+                )
+            else:
+                tb_dir = os.path.join(log_dir, tb_subdir)
+                self.writer = SummaryWriter(log_dir=tb_dir)
+                print(f"[LossLogger] TensorBoard writer → {tb_dir}")
+                print(f"             Mở notebook và chạy:")
+                print(f"               %load_ext tensorboard")
+                print(f"               %tensorboard --logdir {tb_dir}")
+
+    # ------------------------------------------------------------------
+    def record(
+        self,
+        epoch: int,
+        train_losses: dict,
+        val_losses: dict,
+        extra_scalars: Optional[dict] = None,
+    ) -> None:
+        """
+        Ghi một epoch vào JSON và (nếu có) TensorBoard.
+
+        Args:
+            epoch:         số epoch hiện tại
+            train_losses:  dict loss train (từ train_one_epoch)
+            val_losses:    dict loss val   (từ validate)
+            extra_scalars: dict tùy chọn ghi thêm vào TB,
+                           vd. {"mAP/map_50": 0.45}
+        """
+        # ── JSON ──────────────────────────────────────────────────────
         entry = {
-            "epoch":       epoch,
-            "train":       train_losses,
-            "val":         val_losses,
+            "epoch": epoch,
+            "train": train_losses,
+            "val":   val_losses,
         }
         self.history.append(entry)
         with open(self.log_path, "w") as f:
             json.dump(self.history, f, indent=2)
 
+        # Ghi extra_scalars (mAP sau eval)
+        if self.writer is not None and extra_scalars:
+            for tag, value in extra_scalars.items():
+                self.writer.add_scalar(tag, float(value), epoch)
+            self.writer.flush()
+
+    # ------------------------------------------------------------------
     def best_epoch(self) -> int:
         """Trả về epoch có val total loss thấp nhất."""
         return min(self.history, key=lambda e: e["val"]["total"])["epoch"]
+
+    # ------------------------------------------------------------------
+    def close(self) -> None:
+        if self.writer is not None:
+            self.writer.flush()
+            self.writer.close()
+            print("[LossLogger] TensorBoard writer đã đóng.")
 
 
 # ---------------------------------------------------------------------------
