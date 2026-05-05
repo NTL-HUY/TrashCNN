@@ -183,10 +183,17 @@ def run_eval(args) -> None:
     import json
     out_path = os.path.join(LOG_DIR, "eval_results.json")
     os.makedirs(LOG_DIR, exist_ok=True)
+
+    def _tensor_to_json(v):
+        if isinstance(v, torch.Tensor):
+            if v.numel() == 1:
+                return float(v.item())
+            return [float(x) for x in v.tolist()]
+        return v
+
     with open(out_path, "w") as f:
-        # torchmetrics trả về tensor → chuyển về float
-        json.dump({k: float(v) if hasattr(v, "item") else v
-                   for k, v in results.items()}, f, indent=2)
+        json.dump({k: _tensor_to_json(v) for k, v in results.items()},
+                  f, indent=2)
     print(f"[Eval] Kết quả đã lưu → {out_path}")
 
 
