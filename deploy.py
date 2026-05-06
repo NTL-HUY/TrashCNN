@@ -44,7 +44,6 @@ CLASS_COLORS = {
     "plastic": (255, 100, 50),  # orange
     "metal": (50, 150, 255),  # blue
     "paper": (80, 200, 80),  # green
-    "glass": (150, 80, 220),  # purple
     "other": (200, 150, 50),  # brown
 }
 

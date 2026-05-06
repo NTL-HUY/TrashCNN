@@ -201,7 +201,6 @@ python dataset.py --data_dir data/taco
 | plastic    | 1  | orange (255,100,50) |
 | metal      | 2  | blue (50,150,255) |
 | paper      | 3  | green (80,200,80) |
-| glass      | 4  | purple (150,80,220) |
 | other      | 5  | brown (200,150,50) |
 ---
 
@@ -241,7 +240,7 @@ python train.py \
 Mỗi epoch sẽ in ra:
 ```
 Epoch  5/50 | Loss: 0.8234 | mAP: 0.3412 | mAP@50: 0.5812 | mAP@75: 0.2901 | LR: 9.50e-03 | Time: 4m 23s ← BEST
-  Per-class: AP_plastic: 0.612 | AP_metal: 0.534 | AP_paper: 0.489 | AP_glass: 0.398 | AP_other: 0.471
+  Per-class: AP_plastic: 0.612 | AP_metal: 0.534 | AP_paper: 0.489 | AP_other: 0.471
 ```
 
 TensorBoard theo dõi:
