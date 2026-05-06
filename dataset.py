@@ -8,6 +8,19 @@
   5. Lọc degenerate boxes (w≤0 hoặc h≤0) – gây NaN loss trong RPN
   6. image_id trong target – cần thiết cho torchmetrics MeanAveragePrecision
   7. get_class_weights() – dùng với WeightedRandomSampler để giải quyết imbalance
+  --- TACO official ---
+  8. Parse annotations.json của TACO chính thức (flat, không chia sẵn split)
+  9. Map tên category TACO → superclass label qua TACO_TO_SUPERCLASS
+     → Bỏ qua annotation nếu tên category không có trong mapping
+  10. Tự chia train/valid/test theo tỉ lệ 80/10/10 (seed cố định để reproducible)
+  11. Resolve đường dẫn ảnh từ data/processed/batch_X/... (ảnh đã resize 600×800)
+  --- Cải tiến mAP ---
+  12. Random scale (train only): resize ảnh ngẫu nhiên trong khoảng [0.7, 1.3]
+      rồi scale boxes tương ứng → model học được multi-scale object tốt hơn
+  13. Random crop (train only): cắt ngẫu nhiên sau khi scale, chỉ giữ box
+      có diện tích còn lại ≥ 30% so với ban đầu → tránh mất annotation
+      Hai augmentation này kết hợp giúp tăng diversity dataset nhỏ (~1.5k ảnh)
+      mà không cần thêm data mới
 """
 
 import json
@@ -105,7 +118,7 @@ SUPERCLASS_NAMES: Dict[int, str] = {
 }
 
 # Số superclass (không tính background)
-NUM_SUPERCLASSES = len(SUPERCLASS_NAMES)
+NUM_SUPERCLASSES = len(SUPERCLASS_NAMES)  # = 5
 
 
 # ─────────────────────────── Transforms ─────────────────────────────────
@@ -118,16 +131,25 @@ class DetectionTransforms:
         → transforms.ToTensor chỉ biến đổi image, không đụng vào boxes.
         → Nếu flip/crop image mà không flip/crop boxes → annotation bị sai.
 
-    Pipeline:
+    Pipeline (train):
         1. PIL → Tensor (float32, [0,1])
         2. Normalize với ImageNet mean/std
-        3. [train only] Random horizontal flip + flip boxes
-        4. [train only] Random color jitter (brightness, contrast)
+        3. Random scale [0.7, 1.3] + scale boxes
+        4. Random crop (giữ box có overlap ≥ 30%)
+        5. Random horizontal flip + flip boxes
+        6. Random color jitter (brightness, contrast)
+
+    Pipeline (val/test):
+        1. PIL → Tensor
+        2. Normalize
     """
 
     # ImageNet statistics – dùng khi train từ scratch trên ảnh RGB thông thường
     MEAN = [0.485, 0.456, 0.406]
     STD = [0.229, 0.224, 0.225]
+
+    # Random crop: giữ box nếu diện tích còn lại ≥ ngưỡng này
+    MIN_BOX_OVERLAP = 0.3
 
     def __init__(self, is_train: bool = False):
         self.is_train = is_train
@@ -148,7 +170,50 @@ class DetectionTransforms:
             _, H, W = img.shape
             boxes = target["boxes"]  # shape (N, 4) – xyxy
 
-            # ── 3. Random Horizontal Flip ──────────────────────────────
+            # ── 3. Random Scale ────────────────────────────────────────
+            # Resize ảnh về scale ngẫu nhiên, scale boxes tương ứng
+            # → Model học được object ở nhiều kích thước khác nhau
+            scale = random.uniform(0.7, 1.3)
+            new_H = max(1, int(H * scale))
+            new_W = max(1, int(W * scale))
+            img = TF.resize(img, [new_H, new_W])
+            if len(boxes) > 0:
+                boxes = boxes * scale  # scale tất cả tọa độ đồng đều
+            H, W = new_H, new_W
+
+            # ── 4. Random Crop ─────────────────────────────────────────
+            # Chọn vùng crop ngẫu nhiên (tối thiểu 60% kích thước ảnh)
+            # → Buộc model học nhận dạng object bị crop một phần
+            crop_h = random.randint(int(H * 0.6), H)
+            crop_w = random.randint(int(W * 0.6), W)
+            top  = random.randint(0, H - crop_h)
+            left = random.randint(0, W - crop_w)
+
+            img = TF.crop(img, top, left, crop_h, crop_w)
+
+            if len(boxes) > 0:
+                # Clip boxes vào vùng crop
+                clipped = boxes.clone()
+                clipped[:, 0] = (boxes[:, 0] - left).clamp(min=0, max=crop_w)
+                clipped[:, 1] = (boxes[:, 1] - top ).clamp(min=0, max=crop_h)
+                clipped[:, 2] = (boxes[:, 2] - left).clamp(min=0, max=crop_w)
+                clipped[:, 3] = (boxes[:, 3] - top ).clamp(min=0, max=crop_h)
+
+                # Tính diện tích còn lại / diện tích ban đầu
+                orig_area  = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+                clip_area  = (clipped[:, 2] - clipped[:, 0]) * (clipped[:, 3] - clipped[:, 1])
+                keep = (clip_area / (orig_area + 1e-6)) >= self.MIN_BOX_OVERLAP
+
+                # Lọc degenerate box sau crop (w≤0 hoặc h≤0)
+                keep &= (clipped[:, 2] > clipped[:, 0]) & (clipped[:, 3] > clipped[:, 1])
+
+                target["boxes"]  = clipped[keep]
+                target["labels"] = target["labels"][keep]
+                boxes = target["boxes"]
+
+            H, W = crop_h, crop_w
+
+            # ── 5. Random Horizontal Flip ──────────────────────────────
             if random.random() > 0.5 and len(boxes) > 0:
                 img = TF.hflip(img)
                 flipped = boxes.clone()
@@ -156,7 +221,7 @@ class DetectionTransforms:
                 flipped[:, 2] = W - boxes[:, 0]  # new x2 = W - old x1
                 target["boxes"] = flipped
 
-            # ── 4. Random Brightness / Contrast ───────────────────────
+            # ── 6. Random Brightness / Contrast ───────────────────────
             brightness = random.uniform(0.7, 1.3)
             contrast = random.uniform(0.7, 1.3)
             img = TF.adjust_brightness(img, brightness)
@@ -172,7 +237,7 @@ class TrashDataset(torch.utils.data.Dataset):
     TACO official dataset reader.
 
     Đọc annotations.json của TACO chính thức, map tên category → superclass
-    qua TACO_TO_SUPERCLASS, tự chia train/valid/test (70/15/15).
+    qua TACO_TO_SUPERCLASS, tự chia train/valid/test (80/10/10).
     Ảnh được load từ data/processed/batch_X/... (đã resize 600×800).
 
     Parameters
@@ -186,6 +251,7 @@ class TrashDataset(torch.utils.data.Dataset):
     seed         : seed cố định để split reproducible
     """
 
+    # Expose để train.py / deploy.py lấy metadata
     categories = [
         {"id": label, "name": name}
         for label, name in SUPERCLASS_NAMES.items()
@@ -196,8 +262,8 @@ class TrashDataset(torch.utils.data.Dataset):
             root: str = "data",
             split: str = "train",
             transforms: Optional[DetectionTransforms] = None,
-            train_ratio: float = 0.7,
-            val_ratio: float = 0.15,
+            train_ratio: float = 0.8,
+            val_ratio: float = 0.1,
             seed: int = 42,
     ):
         self.processed_root = os.path.join(root, "processed")

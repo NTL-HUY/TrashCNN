@@ -18,7 +18,7 @@ def get_args():
     p = argparse.ArgumentParser(description="TrashCNN Training")
     p.add_argument("--data_path", type=str, default="data",
                    help="Thư mục gốc chứa annotations.json và processed/")
-    p.add_argument("--epochs", type=int, default=50)
+    p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--num_workers", type=int, default=0)
     p.add_argument("--lr", type=float, default=0.005)
@@ -189,7 +189,10 @@ def main():
     # ── Model ─────────────────────────────────────────────────────────
     model = build_model(num_classes=num_classes).to(device)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"Total params: {total_params:,}")
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total params    : {total_params:,}")
+    print(f"Trainable params: {trainable_params:,}  "
+          f"(frozen: {total_params - trainable_params:,})\n")
 
     # ── FIX: SGD + momentum (ổn hơn Adam cho detection) ──────────────
     optimizer = torch.optim.SGD(
