@@ -402,7 +402,7 @@ class TrashDataset(torch.utils.data.Dataset):
         target = {
             "boxes": boxes_t,
             "labels": labels_t,
-            "image_id": torch.tensor([img_id], dtype=torch.int64),
+            "image_id": torch.tensor(img_id, dtype=torch.int64),
         }
 
         # ── Apply transforms ───────────────────────────────────────────
