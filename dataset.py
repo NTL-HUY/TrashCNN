@@ -50,12 +50,6 @@ TACO_SUPERCATEGORY_MAP = {
     "Pop tab": "metal",
     "Scrap metal": "metal",
 
-    # --- GLASS ---
-    "Glass bottle": "glass",
-    "Broken glass": "glass",
-    "Glass cup": "glass",
-    "Glass jar": "glass",
-
     # --- PAPER ---
     "Carded blister pack": "paper",
     "Toilet tube": "paper",
@@ -108,9 +102,13 @@ TACO_SUPERCATEGORY_MAP = {
     "Shoe": "other",
     "Unlabeled litter": "other",
     "Cigarette": "other",
+    "Glass bottle": "other",
+    "Broken glass": "other",
+    "Glass cup": "other",
+    "Glass jar": "other",
 }
 
-TARGET_CLASSES = ["background", "plastic", "metal", "paper", "glass", "other"]
+TARGET_CLASSES = ["background", "plastic", "metal", "paper", "other"]
 CLASS_TO_IDX   = {cls: idx for idx, cls in enumerate(TARGET_CLASSES)}
 NUM_CLASSES    = len(TARGET_CLASSES)
 
