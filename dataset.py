@@ -74,32 +74,37 @@ TACO_SUPERCATEGORY_MAP = {
     "Paper straw": "paper",
 
     # --- PLASTIC ---
-    "Other plastic bottle": "plastic",
-    "Clear plastic bottle": "plastic",
-    "Plastic bottle cap": "plastic",
-    "Disposable plastic cup": "plastic",
-    "Foam cup": "plastic",
-    "Other plastic cup": "plastic",
-    "Plastic lid": "plastic",
-    "Other plastic": "plastic",
-    "Plastified paper bag": "plastic",
-    "Plastic film": "plastic",
-    "Six pack rings": "plastic",
-    "Garbage bag": "plastic",
-    "Other plastic wrapper": "plastic",
-    "Single-use carrier bag": "plastic",
-    "Polypropylene bag": "plastic",
-    "Crisp packet": "plastic",
-    "Spread tub": "plastic",
-    "Tupperware": "plastic",
-    "Disposable food container": "plastic",
-    "Foam food container": "plastic",
-    "Other plastic container": "plastic",
-    "Plastic glooves": "plastic",
-    "Plastic utensils": "plastic",
-    "Squeezable tube": "plastic",
-    "Plastic straw": "plastic",
-    "Styrofoam piece": "plastic",
+    # Nhóm 1: Nhựa cứng (Rigid)
+    "Other plastic bottle": "plastic rigid",
+    "Clear plastic bottle": "plastic rigid",
+    "Spread tub": "plastic rigid",
+    "Tupperware": "plastic rigid",
+    "Disposable food container": "plastic rigid",
+    "Foam food container": "plastic rigid",
+    "Other plastic container": "plastic rigid",
+    "Squeezable tube": "plastic rigid",
+
+    # Nhóm 2: Nhựa mềm (Flexible)
+    "Plastic film": "plastic flexible",
+    "Six pack rings": "plastic flexible",
+    "Garbage bag": "plastic flexible",
+    "Other plastic wrapper": "plastic flexible",
+    "Single-use carrier bag": "plastic flexible",
+    "Polypropylene bag": "plastic flexible",
+    "Crisp packet": "plastic flexible",
+    "Plastified paper bag": "plastic flexible",
+
+    # Nhóm 3: Nhựa nhỏ/khác (Small/Other)
+    "Plastic bottle cap": "plastic small",
+    "Plastic lid": "plastic small",
+    "Plastic utensils": "plastic small",
+    "Plastic straw": "plastic small",
+    "Styrofoam piece": "plastic small",
+    "Plastic glooves": "plastic small",
+    "Disposable plastic cup": "plastic small",
+    "Foam cup": "plastic small",
+    "Other plastic cup": "plastic small",
+    "Other plastic": "plastic small",
 
     # --- OTHER ---
     "Battery": "other",
@@ -110,7 +115,7 @@ TACO_SUPERCATEGORY_MAP = {
     "Cigarette": "other",
 }
 
-TARGET_CLASSES = ["background", "plastic", "metal", "paper", "glass", "other"]
+TARGET_CLASSES = ["background", "plastic rigid", "plastic flexible", "plastic small", "metal", "paper", "glass", "other"]
 CLASS_TO_IDX   = {cls: idx for idx, cls in enumerate(TARGET_CLASSES)}
 NUM_CLASSES    = len(TARGET_CLASSES)
 
