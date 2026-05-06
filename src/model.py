@@ -964,7 +964,6 @@ def get_lr_scheduler(optimizer: torch.optim.Optimizer):
         factor=LR_FACTOR,
         patience=LR_PATIENCE,
         min_lr=LR_MIN,
-        verbose=True,
     )
 
 
