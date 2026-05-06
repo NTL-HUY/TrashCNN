@@ -3,7 +3,7 @@
      → Inference PHẢI dùng cùng normalize như lúc train (mean/std)
      → Bản cũ thiếu normalize → model nhận input khác distribution → predict sai
   2. Dùng build_inference_model() → score_thresh cao hơn để lọc noise
-  3. Tên class lấy từ dataset thay vì hardcode list
+  3. Tên class lấy từ SUPERCLASS_NAMES thay vì hardcode list
   4. Hỗ trợ deploy trên ảnh file tùy ý (--image)
   5. Hiển thị confidence score rõ ràng hơn
 """
@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from dataset import TrashDataset, DetectionTransforms
+from dataset import TrashDataset, DetectionTransforms, SUPERCLASS_NAMES, NUM_SUPERCLASSES
 from model import build_inference_model
 
 # ─────────────────────────── Colors ──────────────────────────────────────
@@ -67,11 +67,8 @@ def deploy_with_gt(args):
         split=args.split,
         transforms=DetectionTransforms(is_train=False),  # chỉ normalize
     )
-    num_classes = len(dataset.categories) + 1
-    class_names = {v: k for k, v in {
-        i + 1: cat["name"] for i, cat in enumerate(dataset.categories)
-    }.items()}
-    label_to_name = {i + 1: cat["name"] for i, cat in enumerate(dataset.categories)}
+    num_classes = NUM_SUPERCLASSES + 1
+    label_to_name = SUPERCLASS_NAMES
 
     model = build_inference_model(
         num_classes=num_classes,
@@ -146,13 +143,9 @@ def deploy_image(args):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # ── Determine classes từ dataset (để lấy tên class) ──────────────
-    dataset = TrashDataset(
-        root=args.data_path,
-        split="train",
-    )
-    num_classes = len(dataset.categories) + 1
-    label_to_name = {i + 1: cat["name"] for i, cat in enumerate(dataset.categories)}
+    # ── Determine classes từ superclass mapping ───────────────────────
+    num_classes = NUM_SUPERCLASSES + 1
+    label_to_name = SUPERCLASS_NAMES  # {1: "plastic", 2: "paper", ...}
 
     # ── Load model ────────────────────────────────────────────────────
     model = build_inference_model(
@@ -199,7 +192,8 @@ def deploy_image(args):
 
 def get_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--data_path", type=str, default=r".\TACO dataset.v1i.coco")
+    p.add_argument("--data_path", type=str, default="data",
+                   help="Thư mục gốc chứa annotations.json và processed/")
     p.add_argument("--model_path", type=str, default="trained_models/best_model.pth")
     p.add_argument("--split", type=str, default="valid")
     p.add_argument("--index", type=int, default=0)

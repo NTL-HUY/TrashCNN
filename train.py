@@ -8,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from tqdm import tqdm
 
-from dataset import TrashDataset, DetectionTransforms, collate_fn
+from dataset import TrashDataset, DetectionTransforms, collate_fn, NUM_SUPERCLASSES
 from model import build_model
 
 
@@ -16,7 +16,8 @@ from model import build_model
 
 def get_args():
     p = argparse.ArgumentParser(description="TrashCNN Training")
-    p.add_argument("--data_path", type=str, default=r".\TACO dataset.v1i.coco")
+    p.add_argument("--data_path", type=str, default="data",
+                   help="Thư mục gốc chứa annotations.json và processed/")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--num_workers", type=int, default=0)
@@ -31,6 +32,12 @@ def get_args():
                    help="Path to checkpoint để tiếp tục train")
     p.add_argument("--early_stop", type=int, default=10,
                    help="Dừng nếu mAP không cải thiện sau N epoch")
+    p.add_argument("--train_ratio", type=float, default=0.8,
+                   help="Tỉ lệ chia train (default 0.8)")
+    p.add_argument("--val_ratio", type=float, default=0.1,
+                   help="Tỉ lệ chia valid (default 0.1, phần còn lại là test)")
+    p.add_argument("--seed", type=int, default=42,
+                   help="Seed để chia split reproducible")
     return p.parse_args()
 
 
@@ -135,16 +142,23 @@ def main():
         root=args.data_path,
         split="train",
         transforms=DetectionTransforms(is_train=True),  # augment + normalize
+        train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
+        seed=args.seed,
     )
     val_dataset = TrashDataset(
         root=args.data_path,
         split="valid",
         transforms=DetectionTransforms(is_train=False),  # chỉ normalize
+        train_ratio=args.train_ratio,
+        val_ratio=args.val_ratio,
+        seed=args.seed,
     )
 
-    num_classes = len(train_dataset.categories) + 1  # +1 cho background
-    print(f"Số class: {num_classes - 1} + background = {num_classes}")
-    print("Classes:", [c['name'] for c in train_dataset.categories])
+    num_classes = NUM_SUPERCLASSES + 1
+    print(f"Số class: {NUM_SUPERCLASSES} + background = {num_classes}")
+    print("Classes:", [c['name'] for c in TrashDataset.categories])
+    print(f"Train: {len(train_dataset)} ảnh | Val: {len(val_dataset)} ảnh\n")
 
     # ── FIX: WeightedRandomSampler → giải quyết class imbalance ──────
     # Ảnh có class hiếm (other, glass) sẽ được sample nhiều hơn

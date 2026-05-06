@@ -21,6 +21,93 @@ import torchvision.transforms.functional as TF
 from PIL import Image
 
 
+# ─────────────────────── Superclass mapping ─────────────────────────────
+
+TACO_TO_SUPERCLASS: Dict[str, int] = {
+    # 1: plastic
+    "other plastic bottle": 1,
+    "clear plastic bottle": 1,
+    "plastic bottle cap": 1,
+    "carded blister pack": 1,
+    "disposable plastic cup": 1,
+    "foam cup": 1,
+    "other plastic cup": 1,
+    "plastic lid": 1,
+    "other plastic": 1,
+    "plastic film": 1,
+    "six pack rings": 1,
+    "garbage bag": 1,
+    "other plastic wrapper": 1,
+    "single-use carrier bag": 1,
+    "polypropylene bag": 1,
+    "crisp packet": 1,
+    "spread tub": 1,
+    "tupperware": 1,
+    "disposable food container": 1,
+    "foam food container": 1,
+    "other plastic container": 1,
+    "plastic glooves": 1,
+    "plastic utensils": 1,
+    "squeezable tube": 1,
+    "plastic straw": 1,
+    "styrofoam piece": 1,
+
+    # 2: paper
+    "toilet tube": 2,
+    "other carton": 2,
+    "egg carton": 2,
+    "drink carton": 2,
+    "corrugated carton": 2,
+    "meal carton": 2,
+    "pizza box": 2,
+    "paper cup": 2,
+    "magazine paper": 2,
+    "tissues": 2,
+    "wrapping paper": 2,
+    "normal paper": 2,
+    "paper bag": 2,
+    "plastified paper bag": 2,
+    "paper straw": 2,
+
+    # 3: metal
+    "aluminium foil": 3,
+    "aluminium blister pack": 3,
+    "metal bottle cap": 3,
+    "food can": 3,
+    "aerosol": 3,
+    "drink can": 3,
+    "metal lid": 3,
+    "pop tab": 3,
+    "scrap metal": 3,
+
+    # 4: glass
+    "glass bottle": 4,
+    "broken glass": 4,
+    "glass cup": 4,
+    "glass jar": 4,
+
+    # 5: other
+    "battery": 5,
+    "food waste": 5,
+    "rope & strings": 5,
+    "shoe": 5,
+    "unlabeled litter": 5,
+    "cigarette": 5,
+}
+
+# Tên hiển thị cho từng superclass label
+SUPERCLASS_NAMES: Dict[int, str] = {
+    1: "plastic",
+    2: "paper",
+    3: "metal",
+    4: "glass",
+    5: "other",
+}
+
+# Số superclass (không tính background)
+NUM_SUPERCLASSES = len(SUPERCLASS_NAMES)
+
+
 # ─────────────────────────── Transforms ─────────────────────────────────
 
 class DetectionTransforms:
@@ -82,46 +169,104 @@ class DetectionTransforms:
 
 class TrashDataset(torch.utils.data.Dataset):
     """
-    TACO dataset reader (COCO JSON format).
+    TACO official dataset reader.
+
+    Đọc annotations.json của TACO chính thức, map tên category → superclass
+    qua TACO_TO_SUPERCLASS, tự chia train/valid/test (70/15/15).
+    Ảnh được load từ data/processed/batch_X/... (đã resize 600×800).
 
     Parameters
     ----------
-    root       : thư mục chứa các split (train/, valid/, test/)
-    split      : "train" | "valid" | "test"
-    transforms : DetectionTransforms
+    root         : thư mục gốc chứa annotations.json và thư mục processed/
+                   (mặc định là "data/" cùng cấp với train.py)
+    split        : "train" | "valid" | "test"
+    transforms   : DetectionTransforms
+    train_ratio  : tỉ lệ chia train (default 0.8)
+    val_ratio    : tỉ lệ chia valid (default 0.1) → phần còn lại là test
+    seed         : seed cố định để split reproducible
     """
+
+    categories = [
+        {"id": label, "name": name}
+        for label, name in SUPERCLASS_NAMES.items()
+    ]
 
     def __init__(
             self,
-            root: str,
+            root: str = "data",
             split: str = "train",
             transforms: Optional[DetectionTransforms] = None,
+            train_ratio: float = 0.7,
+            val_ratio: float = 0.15,
+            seed: int = 42,
     ):
-        self.root = os.path.join(root, split)
+        self.processed_root = os.path.join(root, "processed")
         self.transforms = transforms
 
-        ann_path = os.path.join(self.root, "_annotations.coco.json")
+        ann_path = os.path.join(root, "annotations.json")
         with open(ann_path, "r", encoding="utf-8") as f:
             coco = json.load(f)
 
-        self.images = coco["images"]
-        self.annotations = coco["annotations"]
-        self.categories = coco["categories"]
+        # ── Build category_id → superclass label ──────────────────────
+        # Chỉ giữ lại category có trong TACO_TO_SUPERCLASS
+        # category_id (TACO) → superclass label (1-based; 0 = background)
+        self._cat_id_to_label: Dict[int, int] = {}
+        for cat in coco["categories"]:
+            name_lower = cat["name"].lower().strip()
+            if name_lower in TACO_TO_SUPERCLASS:
+                self._cat_id_to_label[cat["id"]] = TACO_TO_SUPERCLASS[name_lower]
 
-        # category_id (COCO) → label index (1-based; 0 = background)
-        self.cat_id_to_label: Dict[int, int] = {
-            cat["id"]: i + 1
-            for i, cat in enumerate(self.categories)
-        }
-        self.label_to_name: Dict[int, str] = {
-            i + 1: cat["name"]
-            for i, cat in enumerate(self.categories)
+        # ── Build image_id → list of valid annotations ─────────────────
+        # "valid" = category có trong mapping và bbox không degenerate
+        img_to_anns_all: Dict[int, list] = defaultdict(list)
+        for ann in coco["annotations"]:
+            if ann["category_id"] not in self._cat_id_to_label:
+                continue  # bỏ qua category không có trong mapping
+            x, y, w, h = ann["bbox"]
+            if w <= 0 or h <= 0:
+                continue  # FIX: lọc degenerate box gây NaN loss
+            img_to_anns_all[ann["image_id"]].append(ann)
+
+        # ── Chỉ giữ ảnh có ít nhất 1 annotation hợp lệ ────────────────
+        valid_image_ids = set(img_to_anns_all.keys())
+        all_images = [img for img in coco["images"] if img["id"] in valid_image_ids]
+
+        # ── Chia split (seed cố định → reproducible) ──────────────────
+        rng = random.Random(seed)
+        shuffled = all_images[:]
+        rng.shuffle(shuffled)
+
+        n = len(shuffled)
+        n_train = int(n * train_ratio)
+        n_val = int(n * val_ratio)
+
+        if split == "train":
+            self.images = shuffled[:n_train]
+        elif split == "valid":
+            self.images = shuffled[n_train: n_train + n_val]
+        else:  # test
+            self.images = shuffled[n_train + n_val:]
+
+        # ── Giữ lại img_to_anns chỉ cho split hiện tại ────────────────
+        split_ids = {img["id"] for img in self.images}
+        self.img_to_anns: Dict[int, list] = {
+            img_id: anns
+            for img_id, anns in img_to_anns_all.items()
+            if img_id in split_ids
         }
 
-        # image_id → list of annotations
-        self.img_to_anns: Dict[int, list] = defaultdict(list)
-        for ann in self.annotations:
-            self.img_to_anns[ann["image_id"]].append(ann)
+        # Alias để deploy.py / train.py dùng như cũ
+        self.cat_id_to_label = self._cat_id_to_label
+        self.label_to_name: Dict[int, str] = SUPERCLASS_NAMES.copy()
+
+    # ── Resolve đường dẫn ảnh ─────────────────────────────────────────
+
+    def _img_path(self, file_name: str) -> str:
+        """
+        TACO file_name có dạng "batch_X/name.jpg".
+        Ảnh processed nằm tại: <processed_root>/batch_X/name.jpg
+        """
+        return os.path.join(self.processed_root, file_name)
 
     # ── Helpers ───────────────────────────────────────────────────────
 
@@ -129,9 +274,9 @@ class TrashDataset(torch.utils.data.Dataset):
         """
         Trả về weight cho mỗi sample để dùng với WeightedRandomSampler.
         Weight = nghịch đảo tần suất class hiếm nhất trong ảnh đó.
-        → Giải quyết vấn đề mất cân bằng (plastic 1925 vs other 17).
+        → Giải quyết vấn đề mất cân bằng (plastic >> other, glass).
         """
-        # Đếm bbox theo class
+        # Đếm bbox theo superclass label
         class_count: Dict[int, int] = defaultdict(int)
         for anns in self.img_to_anns.values():
             for ann in anns:
@@ -162,7 +307,7 @@ class TrashDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int):
         img_info = self.images[idx]
         img_id = img_info["id"]
-        img_path = os.path.join(self.root, img_info["file_name"])
+        img_path = self._img_path(img_info["file_name"])
 
         image = Image.open(img_path).convert("RGB")
 
