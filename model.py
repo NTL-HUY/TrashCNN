@@ -1,5 +1,7 @@
+import torch
 import torch.nn as nn
 from torchvision.models.detection import FasterRCNN
+from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 from torchvision.models.detection.rpn import AnchorGenerator
 
 
@@ -27,8 +29,10 @@ class SimpleBackbone(nn.Module):
     def forward(self, x):
         return self.body(x)
 
+
 import torch.nn as nn
 import torch.nn.functional as F
+
 
 class ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1):
@@ -50,6 +54,7 @@ class ResidualBlock(nn.Module):
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
         return F.relu(out)
+
 
 class BetterBackbone(nn.Module):
     def __init__(self):
@@ -81,16 +86,67 @@ class BetterBackbone(nn.Module):
         x = self.layer3(x)
         return x
 
-def build_model(num_classes=7):
-    anchor_generator = AnchorGenerator(
-        sizes=((32, 64, 128, 256),),
-        aspect_ratios=((0.5, 1.0, 2.0),)
+
+# def build_model(num_classes=7):
+#     anchor_generator = AnchorGenerator(
+#         sizes=((8, 16, 32, 64, 128, 256),),
+#         aspect_ratios=((0.3, 0.5, 1.0, 2.0, 3.0),)
+#     )
+#     model = FasterRCNN(
+#         backbone=BetterBackbone(),
+#         num_classes=num_classes,
+#         rpn_anchor_generator=anchor_generator,
+#         box_score_thresh=0.3,  # giảm threshold
+#         box_detections_per_img=50
+#     )
+#     return model
+
+
+def build_model(num_classes=6):
+    # Option A: ResNet-50 pretrained + FPN (mAP cao nhất)
+    backbone = resnet_fpn_backbone(
+        backbone_name='resnet50',
+        pretrained=True,  # ImageNet weights
+        trainable_layers=3  # Freeze 2 layer đầu
     )
+
+    anchor_generator = AnchorGenerator(
+        sizes=((32,), (64,), (128,), (256,), (512,)),
+        aspect_ratios=((0.5, 1.0, 2.0),) * 5
+    )
+
     model = FasterRCNN(
-        backbone=BetterBackbone(),
-        num_classes=num_classes,
+        backbone=backbone,
+        num_classes=6,
         rpn_anchor_generator=anchor_generator,
-        box_score_thresh=0.3,  # giảm threshold
-        box_detections_per_img=50
+
+        # Các tham số RPN — nếu không truyền thì dùng mặc định
+        rpn_pre_nms_top_n_train=2000,  # lấy top 2000 trước NMS lúc train
+        rpn_pre_nms_top_n_test=1000,  # lấy top 1000 trước NMS lúc inference
+        rpn_post_nms_top_n_train=2000,  # giữ tối đa 2000 sau NMS lúc train
+        rpn_post_nms_top_n_test=1000,  # giữ tối đa 1000 sau NMS lúc inference
+        rpn_nms_thresh=0.7,  # IoU > 0.7 thì coi là trùng, bỏ
+        rpn_score_thresh=0.0,  # score tối thiểu để giữ anchor
+
+        # Box/detection params — bạn đang thiếu phần này
+        box_score_thresh=0.3,  # loại box có score < 0.3
+        box_nms_thresh=0.5,  # NMS lần 2 sau khi head phân loại
+        box_detections_per_img=50,  # tối đa 50 box trên 1 ảnh
     )
     return model
+
+
+if __name__ == '__main__':
+    x = torch.randn(1, 3, 800, 800)  # 1 ảnh
+    backbone = resnet_fpn_backbone(
+        backbone_name='resnet50',
+        pretrained=True,  # ImageNet weights
+        trainable_layers=3  # Freeze 2 layer đầu
+    )
+
+    output = backbone(x)
+    print(type(output))
+    # OrderedDict
+
+    for k, v in output.items():
+        print(f"  [{k}]: {v.shape}")

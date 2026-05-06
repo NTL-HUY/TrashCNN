@@ -92,12 +92,12 @@ def deploy_with_gt(index=9):
 
 
 if __name__ == "__main__":
-    # for i in range(10):
-    #     deploy_with_gt(i*2)
-    dataset = TrashDataset(
-        root=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco",
-        split="train",
-        transforms=transforms.ToTensor()
-    )
-    pprint(dataset.categories)
-    pprint(dataset.cat_id_to_label)
+    for i in range(10):
+        deploy_with_gt(i*2)
+    # dataset = TrashDataset(
+    #     root=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco",
+    #     split="train",
+    #     transforms=transforms.ToTensor()
+    # )
+    # pprint(dataset.categories)
+    # pprint(dataset.cat_id_to_label)

@@ -72,18 +72,20 @@ def train(args):
     writer = SummaryWriter(log_dir=args.log_path)
     print(f"TensorBoard logs → {args.log_path}")
     print(f"  Run: tensorboard --logdir {args.log_path}\n")
-    model = build_model(num_classes=len(train_dataset.categories) + 1).to(device)
-    opimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+    model = build_model(num_classes=train_dataset.get_num_classes()).to(device)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
     best_map = -1
 
     start_epoch = 0
     if args.resume_train_path is not None and os.path.exists(args.resume_train_path):
         print(f"Load checkpoint from {args.resume_train_path}")
         checkpoint = torch.load(args.resume_train_path, map_location=device)
-
+        scheduler.load_state_dict(checkpoint["scheduler"])
         model.load_state_dict(checkpoint["model"])
-        opimizer.load_state_dict(checkpoint["optimizer"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
         start_epoch = checkpoint["epoch"]
+        best_map = checkpoint["best_map"]
         print(f"Tiep tuc tu epoch {start_epoch}")
 
     for epoch in range(start_epoch, args.epochs):
@@ -96,17 +98,22 @@ def train(args):
             loss_components = model(images, targets)
             losses = sum(loss for loss in loss_components.values())
 
-            opimizer.zero_grad()  # tat luu tru value cua gradient trong buffer ?
+            optimizer.zero_grad()  # tat luu tru value cua gradient trong buffer ?
             losses.backward()  # tinh dao ham (gradient) (quy tac chain rule)
-            opimizer.step()  # w = w-lr*grad , lay gia tri cua gradient de update weight
+            optimizer.step()  # w = w-lr*grad , lay gia tri cua gradient de update weight
 
             # print
-            train_progress_bar.set_description(f"Epoch{epoch + 1}/{args.epochs}. Loss: {losses:.4f}")
+            loss_str = " | ".join([f"{k}: {v:.4f}" for k, v in loss_components.items()])
+            train_progress_bar.set_description(
+                f"Epoch {epoch + 1}/{args.epochs} | Total: {losses:.4f} | {loss_str}"
+            )
 
             train_loss.append(losses.item())
             avg_loss = np.mean(train_loss)  # tensor.item(), lay value that cua tensor
-            writer.add_scalar("Train/Losss", avg_loss, epoch * len(train_data_loader) + iter)
+            writer.add_scalar("Train/Loss", avg_loss, epoch * len(train_data_loader) + iter)
 
+        scheduler.step()
+        writer.add_scalar("Train/LR", scheduler.get_last_lr()[0], epoch)
         # EVAL
         # tinh MAP
         model.eval()
@@ -126,25 +133,34 @@ def train(args):
                 # print(targets[0]["labels"])
                 metric.update(predictions, targets)
                 # post process
-        map = metric.compute()
-        writer.add_scalar("Val/mAP", map["map"].item(), epoch)
+        map_result = metric.compute()
+        writer.add_scalar("Val/mAP", map_result["map"].item(), epoch)
+        writer.add_scalar("Val/mAP_50", map_result["map_50"].item(), epoch)
+        writer.add_scalar("Val/mAP_75", map_result["map_75"].item(), epoch)
+        for i, ap in enumerate(map_result["map_per_class"]):
+            writer.add_scalar(f"Val/AP_{train_dataset.categories[i]['name']}", ap.item(), epoch)
         # pprint(metric.compute())
         # save model
         checkpoint = {
             "epoch": epoch + 1,
             "model": model.state_dict(),
-            "optimizer": opimizer.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
             "best_map": best_map
         }
-        if map["map"] > best_map:
+        if map_result["map"] > best_map:
             # triển khai
             save_path = os.path.join(args.save_path, "best_model.pth")
             torch.save(checkpoint, save_path)
-            best_map = map["map"]
+            best_map = map_result["map"]
         # train tiếp
         save_path = os.path.join(args.save_path, "last_model.pth")
         torch.save(checkpoint, save_path)
-        print(f"Epoch {epoch + 1} - mAP: {map['map']:.4f}")
+        avg_loss = np.mean(train_loss)
+        print(f"\n Epoch {epoch + 1} summary:")
+        print(f"   Avg total loss : {avg_loss:.4f}")
+        print(f"   LR hiện tại    : {scheduler.get_last_lr()[0]:.6f}")
+        print(f"Epoch {epoch + 1} - mAP: {map_result['map']:.4f}")
     writer.close()
 
 
