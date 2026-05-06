@@ -1,17 +1,14 @@
 """
-utils.py – Tiện ích tổng hợp
+utils.py
 ==============================
 Gồm:
-  • setup_device()          – chọn GPU/CPU tự động
-  • create_data_loaders()   – tạo train/val/test DataLoader với split ngẫu nhiên
-  • plot_losses()           – vẽ đồ thị loss theo epoch
-  • visualize_predictions() – vẽ bounding box lên ảnh (dùng OpenCV)
-  • seed_everything()       – đảm bảo kết quả reproducible
-  • LossLogger              – ghi log JSON + TensorBoard SummaryWriter
-
-TensorBoard:
-    %load_ext tensorboard
-    %tensorboard --logdir logs/tb
+  • setup_device()        – chọn GPU/CPU tự động
+  • seed_everything()     – đảm bảo kết quả reproducible
+  • create_data_loaders() – tạo train/val/test DataLoader
+  • LossLogger            – ghi JSON + TensorBoard
+  • draw_predictions()    – vẽ bounding box lên ảnh (OpenCV)
+  • plot_losses()         – vẽ đồ thị loss chi tiết theo epoch
+  • ensure_dirs()         – tạo thư mục cần thiết
 """
 
 import os
@@ -21,10 +18,10 @@ from typing import Optional
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 
 from src.config import (
-    TRAIN_RATIO, VAL_RATIO, TEST_RATIO,
+    TRAIN_RATIO, VAL_RATIO,
     RANDOM_SEED, BATCH_SIZE, NUM_WORKERS,
     SUPERCLASS_NAMES, SUPERCLASS_COLORS,
     CHECKPOINT_DIR, LOG_DIR,
@@ -49,7 +46,7 @@ def setup_device() -> torch.device:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[Utils] Device: {device}")
     if device.type == "cuda":
-        print(f"        GPU: {torch.cuda.get_device_name(0)}")
+        print(f"        GPU : {torch.cuda.get_device_name(0)}")
         print(f"        VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     return device
 
@@ -65,6 +62,8 @@ def seed_everything(seed: int = RANDOM_SEED) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark     = False
 
 
 # ---------------------------------------------------------------------------
@@ -73,45 +72,33 @@ def seed_everything(seed: int = RANDOM_SEED) -> None:
 
 def create_data_loaders(
     annotation_file: str,
-    image_dir: str,
-    batch_size: int = BATCH_SIZE,
-    num_workers: int = NUM_WORKERS,
-    seed: int = RANDOM_SEED,
+    image_dir:       str,
+    batch_size:      int = BATCH_SIZE,
+    num_workers:     int = NUM_WORKERS,
+    seed:            int = RANDOM_SEED,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
-    Tạo 3 DataLoader (train / val / test) với stratified split.
-
-    Args:
-        annotation_file: đường dẫn annotations.json
-        image_dir:       thư mục chứa ảnh (sau preprocess)
-        batch_size:      số ảnh mỗi batch
-        num_workers:     số process đọc data song song
-        seed:            random seed để split reproducible
+    Tạo 3 DataLoader (train / val / test) với random split cố định.
 
     Returns:
         (train_loader, val_loader, test_loader)
     """
-    # ── Tạo full dataset để lấy tổng số ảnh ──────────────────────────────
     full_ds = TACODataset(annotation_file, image_dir)
     n       = len(full_ds)
 
-    # ── Shuffle index ─────────────────────────────────────────────────────
     indices = list(range(n))
     rng     = random.Random(seed)
     rng.shuffle(indices)
 
-    # ── Tính ngưỡng split ─────────────────────────────────────────────────
-    n_train = int(n * TRAIN_RATIO)
-    n_val   = int(n * VAL_RATIO)
-
+    n_train   = int(n * TRAIN_RATIO)
+    n_val     = int(n * VAL_RATIO)
     train_idx = indices[:n_train]
-    val_idx   = indices[n_train : n_train + n_val]
+    val_idx   = indices[n_train: n_train + n_val]
     test_idx  = indices[n_train + n_val:]
 
     print(f"[Utils] Split: train={len(train_idx)} | "
           f"val={len(val_idx)} | test={len(test_idx)}")
 
-    # ── Tạo dataset với transform tương ứng ──────────────────────────────
     train_ds = TACODataset(annotation_file, image_dir,
                            transforms=get_train_transforms(),
                            indices=train_idx)
@@ -122,21 +109,15 @@ def create_data_loaders(
                            transforms=get_val_transforms(),
                            indices=test_idx)
 
-    # ── DataLoader ────────────────────────────────────────────────────────
-    train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, collate_fn=collate_fn,
-        pin_memory=torch.cuda.is_available(),
-    )
-    val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, collate_fn=collate_fn,
-        pin_memory=torch.cuda.is_available(),
-    )
-    test_loader = DataLoader(
-        test_ds, batch_size=1, shuffle=False,
-        num_workers=num_workers, collate_fn=collate_fn,
-    )
+    pin = torch.cuda.is_available()
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+                              num_workers=num_workers, collate_fn=collate_fn,
+                              pin_memory=pin)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
+                              num_workers=num_workers, collate_fn=collate_fn,
+                              pin_memory=pin)
+    test_loader  = DataLoader(test_ds,  batch_size=1, shuffle=False,
+                              num_workers=num_workers, collate_fn=collate_fn)
 
     return train_loader, val_loader, test_loader
 
@@ -147,87 +128,70 @@ def create_data_loaders(
 
 class LossLogger:
     """
-    Lưu và ghi log loss mỗi epoch.
+    Ghi log loss mỗi epoch ra:
+      • logs/training_log.json    (luôn ghi)
+      • logs/tb/                  (nếu use_tensorboard=True)
 
-    • Luôn ghi JSON vào logs/training_log.json  (hành vi cũ, giữ nguyên)
-    • Nếu use_tensorboard=True → tạo SummaryWriter vào logs/tb/
-      rồi ghi scalar Train/* và Val/* để xem qua %tensorboard --logdir logs/tb
-
-    --------------------
-    logger = LossLogger(use_tensorboard=True)
-    #   %load_ext tensorboard
-    #   %tensorboard --logdir logs/tb
-    ...
-    logger.close()
+    Dùng trong notebook:
+      %load_ext tensorboard
+      %tensorboard --logdir logs/tb
     """
 
     def __init__(
         self,
-        log_dir: str = LOG_DIR,
+        log_dir:         str  = LOG_DIR,
         use_tensorboard: bool = True,
-        tb_subdir: str = "tb",
+        tb_subdir:       str  = "tb",
     ):
         os.makedirs(log_dir, exist_ok=True)
         self.log_path = os.path.join(log_dir, "training_log.json")
-        self.history: list[dict] = []
+        self.history:  list[dict] = []
+        self.writer:   Optional["SummaryWriter"] = None
 
-        self.writer: Optional["SummaryWriter"] = None
         if use_tensorboard:
             if not _TB_AVAILABLE:
-                print(
-                    "[LossLogger] ⚠  tensorboard chưa cài. "
-                    "Chạy: pip install tensorboard\n"
-                    "            TensorBoard log bị tắt."
-                )
+                print("[LossLogger] ⚠  tensorboard chưa cài → pip install tensorboard")
             else:
                 tb_dir = os.path.join(log_dir, tb_subdir)
                 self.writer = SummaryWriter(log_dir=tb_dir)
-                print(f"[LossLogger] TensorBoard writer → {tb_dir}")
-                print(f"             Mở notebook và chạy:")
-                print(f"               %load_ext tensorboard")
-                print(f"               %tensorboard --logdir {tb_dir}")
+                print(f"[LossLogger] TensorBoard → {tb_dir}")
+                print(f"             %load_ext tensorboard")
+                print(f"             %tensorboard --logdir {tb_dir}")
 
-    # ------------------------------------------------------------------
     def record(
         self,
-        epoch: int,
-        train_losses: dict,
-        val_losses: dict,
+        epoch:         int,
+        train_losses:  dict,
+        val_losses:    dict,
         extra_scalars: Optional[dict] = None,
     ) -> None:
         """
-        Ghi một epoch vào JSON và (nếu có) TensorBoard.
+        Ghi một epoch.
 
         Args:
-            epoch:         số epoch hiện tại
-            train_losses:  dict loss train (từ train_one_epoch)
-            val_losses:    dict loss val   (từ validate)
-            extra_scalars: dict tùy chọn ghi thêm vào TB,
-                           vd. {"mAP/map_50": 0.45}
+            extra_scalars: ghi thêm vào TB, vd. {"mAP/map_50": 0.45}
+                           TB đã được ghi bên trong trainer nên
+                           record() chỉ dùng extra_scalars để tránh ghi đôi.
         """
-        # ── JSON ──────────────────────────────────────────────────────
-        entry = {
+        self.history.append({
             "epoch": epoch,
             "train": train_losses,
             "val":   val_losses,
-        }
-        self.history.append(entry)
+        })
         with open(self.log_path, "w") as f:
             json.dump(self.history, f, indent=2)
 
-        # Ghi extra_scalars (mAP sau eval)
         if self.writer is not None and extra_scalars:
             for tag, value in extra_scalars.items():
                 self.writer.add_scalar(tag, float(value), epoch)
             self.writer.flush()
 
-    # ------------------------------------------------------------------
     def best_epoch(self) -> int:
-        """Trả về epoch có val total loss thấp nhất."""
+        """Epoch có val total loss thấp nhất."""
         return min(self.history, key=lambda e: e["val"]["total"])["epoch"]
 
-    # ------------------------------------------------------------------
     def close(self) -> None:
+        """Flush và đóng TensorBoard writer."""
         if self.writer is not None:
             self.writer.flush()
             self.writer.close()
@@ -239,94 +203,120 @@ class LossLogger:
 # ---------------------------------------------------------------------------
 
 def draw_predictions(
-    image_bgr:   np.ndarray,
+    image_bgr:    np.ndarray,
     boxes:        torch.Tensor,
     labels:       torch.Tensor,
     scores:       torch.Tensor,
     score_thresh: float = 0.3,
 ) -> np.ndarray:
     """
-    Vẽ bounding box + label + score lên ảnh BGR (OpenCV format).
+    Vẽ bounding box + label + score lên ảnh BGR (OpenCV).
 
     Args:
-        image_bgr:    ảnh BGR numpy array (H, W, 3)
-        boxes:        Tensor [N, 4] – [x1, y1, x2, y2]
+        image_bgr:    numpy array (H, W, 3) BGR
+        boxes:        Tensor [N, 4] x1y1x2y2
         labels:       Tensor [N]
         scores:       Tensor [N]
         score_thresh: chỉ vẽ box có score >= threshold
-
-    Returns:
-        ảnh với bounding box đã vẽ
     """
     try:
         import cv2
     except ImportError:
-        raise ImportError("Cần cài opencv-python: pip install opencv-python")
+        raise ImportError("pip install opencv-python")
 
     img = image_bgr.copy()
-
     for box, label, score in zip(boxes, labels, scores):
         if score < score_thresh:
             continue
-
         x1, y1, x2, y2 = box.int().tolist()
         cls_idx  = label.item()
         cls_name = SUPERCLASS_NAMES.get(cls_idx, "unknown")
         color    = SUPERCLASS_COLORS.get(cls_idx, (255, 255, 255))
-
-        # Vẽ bounding box
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness=2)
-
-        # Vẽ label + score
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
         text = f"{cls_name} {score:.2f}"
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(img, (x1, y1 - th - 4), (x1 + tw, y1), color, -1)
-        cv2.putText(
-            img, text, (x1, y1 - 3),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-            (0, 0, 0), thickness=1,
-        )
-
+        cv2.putText(img, text, (x1, y1 - 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
     return img
 
 
-def plot_losses(log_path: str, save_path: Optional[str] = None) -> None:
+# ---------------------------------------------------------------------------
+# Loss plot
+# ---------------------------------------------------------------------------
+
+def plot_losses(
+    log_path:  str,
+    save_path: Optional[str] = None,
+) -> None:
     """
-    Đọc training_log.json và vẽ đồ thị loss (train vs val).
-    Yêu cầu matplotlib.
+    Đọc training_log.json và vẽ 2 subplots:
+      • Trên: Total loss (train vs val)
+      • Dưới: Từng loss thành phần (objectness, rpn_box_reg, classifier, box_reg)
+
+    Hữu ích để debug: nếu loss_objectness cao → RPN yếu;
+    nếu loss_classifier cao → head chưa học được phân biệt class.
     """
     try:
         import matplotlib.pyplot as plt
     except ImportError:
-        print("Cần cài matplotlib: pip install matplotlib")
+        print("pip install matplotlib")
         return
 
     with open(log_path) as f:
         history = json.load(f)
 
-    epochs     = [e["epoch"] for e in history]
-    train_loss = [e["train"]["total"] for e in history]
-    val_loss   = [e["val"]["total"]   for e in history]
+    epochs     = [e["epoch"]            for e in history]
+    train_tot  = [e["train"]["total"]   for e in history]
+    val_tot    = [e["val"]["total"]     for e in history]
 
-    plt.figure(figsize=(10, 5))
-    plt.plot(epochs, train_loss, label="Train Loss", marker="o")
-    plt.plot(epochs, val_loss,   label="Val Loss",   marker="s")
-    plt.xlabel("Epoch")
-    plt.ylabel("Total Loss")
-    plt.title("Training & Validation Loss")
-    plt.legend()
-    plt.grid(True)
+    # Lấy tất cả loss keys (trừ "total")
+    loss_keys = [k for k in history[0]["train"] if k != "total"]
+
+    fig, axes = plt.subplots(
+        1 + bool(loss_keys), 1,
+        figsize=(11, 5 * (1 + bool(loss_keys))),
+        sharex=True,
+    )
+    if not isinstance(axes, np.ndarray):
+        axes = [axes]
+
+    # ── Plot 1: Total loss ────────────────────────────────────────────
+    ax = axes[0]
+    ax.plot(epochs, train_tot, "o-", label="Train total", linewidth=2)
+    ax.plot(epochs, val_tot,   "s-", label="Val total",   linewidth=2)
+    ax.set_ylabel("Total Loss")
+    ax.set_title("Training & Validation Loss")
+    ax.legend()
+    ax.grid(True, alpha=0.4)
+
+    # ── Plot 2: Từng loss thành phần ──────────────────────────────────
+    if loss_keys and len(axes) > 1:
+        ax2 = axes[1]
+        for key in loss_keys:
+            train_vals = [e["train"].get(key, 0) for e in history]
+            val_vals   = [e["val"].get(key, 0)   for e in history]
+            line, = ax2.plot(epochs, train_vals, "o--",
+                             label=f"Train {key}", linewidth=1.5)
+            ax2.plot(epochs, val_vals, "s-",
+                     color=line.get_color(),
+                     label=f"Val {key}", linewidth=1.5, alpha=0.7)
+        ax2.set_xlabel("Epoch")
+        ax2.set_ylabel("Loss")
+        ax2.set_title("Loss thành phần")
+        ax2.legend(fontsize=8, ncol=2)
+        ax2.grid(True, alpha=0.4)
+
     plt.tight_layout()
-
     if save_path:
         plt.savefig(save_path, dpi=150)
-        print(f"[Utils] Đã lưu biểu đồ loss → {save_path}")
+        print(f"[Utils] Đồ thị loss → {save_path}")
     else:
         plt.show()
 
 
 # ---------------------------------------------------------------------------
-# Checkpoint helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
 def ensure_dirs() -> None:

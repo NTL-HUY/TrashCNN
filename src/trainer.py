@@ -1,18 +1,6 @@
 """
 trainer.py – Training & Validation Loops
 ==========================================
-Chứa hai hàm chính:
-  • train_one_epoch()  – 1 epoch training, trả về dict loss
-  • validate()         – 1 epoch validation (chỉ tính loss, không tính mAP)
-
-Note: FasterRCNN của torchvision khi ở mode train() TỰ tính loss
-từ cặp (images, targets). Không cần tự viết loss function.
-
-Loss trả về gồm:
-  loss_classifier   – phân loại bounding box
-  loss_box_reg      – hồi quy tọa độ box
-  loss_objectness   – RPN phân biệt foreground/background
-  loss_rpn_box_reg  – RPN hồi quy proposal
 """
 
 import time
@@ -41,69 +29,44 @@ def train_one_epoch(
     print_freq: int = 20,
     writer:     Optional["SummaryWriter"] = None,
 ) -> dict[str, float]:
-    """
-    Chạy 1 epoch training.
-
-    Args:
-        model:      FasterRCNN đang ở chế độ feature extraction
-        optimizer:  SGD optimizer (chỉ update trainable params)
-        dataloader: DataLoader training
-        device:     cuda hoặc cpu
-        epoch:      số epoch hiện tại (để log)
-        print_freq: in log sau mỗi N batch
-        writer:     SummaryWriter của TensorBoard (None = không ghi TB)
-
-    Returns:
-        avg_losses: dict {tên_loss: giá_trị_trung_bình} cho cả epoch
-    """
     model.train()
     total_losses: dict[str, float] = {}
     n_batches = 0
-    t_start = time.time()
+    t_start   = time.time()
 
-    batches_per_epoch = len(dataloader)
+    batches_per_epoch  = len(dataloader)
     global_batch_start = (epoch - 1) * batches_per_epoch
 
     for batch_idx, (images, targets) in enumerate(dataloader):
-        # ── Chuyển dữ liệu lên device ──────────────────────────────────
         images  = [img.to(device) for img in images]
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        # ── Forward pass → FasterRCNN trả về dict loss ─────────────────
+        # FasterRCNN from scratch trả về dict loss khi training
         loss_dict = model(images, targets)
-        # loss_dict = {
-        #   "loss_classifier": ...,
-        #   "loss_box_reg": ...,
-        #   "loss_objectness": ...,
-        #   "loss_rpn_box_reg": ...
-        # }
+        losses    = sum(loss_dict.values())
 
-        losses = sum(loss_dict.values())   # tổng loss
-
-        # ── Backward + update ──────────────────────────────────────────
         optimizer.zero_grad()
         losses.backward()
-        # Gradient clipping: tránh exploding gradient (đặc biệt khi train head)
         torch.nn.utils.clip_grad_norm_(
-            [p for p in model.parameters() if p.requires_grad], max_norm=5.0
+            [p for p in model.parameters() if p.requires_grad],
+            max_norm=5.0,
         )
         optimizer.step()
 
-        # ── Tích lũy loss để tính trung bình ──────────────────────────
         for k, v in loss_dict.items():
             total_losses[k] = total_losses.get(k, 0.0) + v.item()
         n_batches += 1
 
-        # ── TensorBoard: ghi loss từng batch ──────────────────────────
+        # TensorBoard per-batch
         if writer is not None:
-            global_step = global_batch_start + batch_idx
+            gs = global_batch_start + batch_idx
             for k, v in loss_dict.items():
-                writer.add_scalar(f"Train/batch_{k}", v.item(), global_step)
-            writer.add_scalar("Train/batch_total", losses.item(), global_step)
+                writer.add_scalar(f"Train/batch_{k}", v.item(), gs)
+            writer.add_scalar("Train/batch_total", losses.item(), gs)
 
-        # ── Log định kỳ ───────────────────────────────────────────────
-        if (batch_idx + 1) % print_freq == 0 or (batch_idx + 1) == len(dataloader):
-            elapsed = time.time() - t_start
+        if (batch_idx + 1) % print_freq == 0 or \
+                (batch_idx + 1) == len(dataloader):
+            elapsed  = time.time() - t_start
             loss_str = "  ".join(
                 f"{k}: {v/n_batches:.4f}" for k, v in total_losses.items()
             )
@@ -114,23 +77,22 @@ def train_one_epoch(
                 f"({elapsed:.1f}s)"
             )
 
-    # Trả về loss trung bình cho cả epoch
     avg_losses = {k: v / n_batches for k, v in total_losses.items()}
     avg_losses["total"] = sum(avg_losses.values())
 
-    # ── TensorBoard: ghi loss trung bình cả epoch ─────────────────────
     if writer is not None:
         for k, v in avg_losses.items():
             writer.add_scalar(f"Train/{k}", v, epoch)
-        # Ghi learning rate hiện tại
-        current_lr = optimizer.param_groups[0]["lr"]
-        writer.add_scalar("Train/learning_rate", current_lr, epoch)
+        writer.add_scalar(
+            "Train/learning_rate",
+            optimizer.param_groups[0]["lr"], epoch,
+        )
 
     return avg_losses
 
 
 # ---------------------------------------------------------------------------
-# Validation – 1 epoch (tính loss, không tính mAP ở đây)
+# Validation – 1 epoch
 # ---------------------------------------------------------------------------
 
 def validate(
@@ -142,18 +104,13 @@ def validate(
 ) -> dict[str, float]:
     """
     Tính validation loss.
-    Lưu ý: để tính loss, model vẫn phải ở mode .train()
-    nhưng không gọi backward(). Đây là đặc điểm của FasterRCNN torchvision.
-
-    Returns:
-        avg_losses: dict loss trung bình trên validation set
+    model.train() + torch.no_grad() → FasterRCNN trả về loss (không inference).
     """
-    # FasterRCNN torchvision chỉ trả loss khi model.training = True
     model.train()
     total_losses: dict[str, float] = {}
     n_batches = 0
 
-    with torch.no_grad():   # không tính gradient → tiết kiệm memory
+    with torch.no_grad():
         for images, targets in dataloader:
             images  = [img.to(device) for img in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
@@ -170,7 +127,6 @@ def validate(
     loss_str = "  ".join(f"{k}: {v:.4f}" for k, v in avg_losses.items())
     print(f"[Val]   Epoch {epoch:02d}  {loss_str}")
 
-    # ── TensorBoard: ghi validation loss theo epoch ────────────────────
     if writer is not None:
         for k, v in avg_losses.items():
             writer.add_scalar(f"Val/{k}", v, epoch)
@@ -183,23 +139,14 @@ def validate(
 # ---------------------------------------------------------------------------
 
 class EarlyStopping:
-    """
-    Dừng training sớm nếu validation loss không cải thiện sau `patience` epoch.
-    Lưu checkpoint tốt nhất (best_model_path).
-    """
-
-    def __init__(self, patience: int = 5, min_delta: float = 1e-4):
-        self.patience   = patience
-        self.min_delta  = min_delta
-        self.best_loss  = float("inf")
-        self.counter    = 0
+    def __init__(self, patience: int = 10, min_delta: float = 1e-4):
+        self.patience    = patience
+        self.min_delta   = min_delta
+        self.best_loss   = float("inf")
+        self.counter     = 0
         self.should_stop = False
 
     def step(self, val_loss: float) -> bool:
-        """
-        Returns:
-            True nếu nên dừng training
-        """
         if val_loss < self.best_loss - self.min_delta:
             self.best_loss = val_loss
             self.counter   = 0
@@ -210,5 +157,4 @@ class EarlyStopping:
             if self.counter >= self.patience:
                 self.should_stop = True
                 print("[EarlyStopping] Dừng training sớm!")
-
         return self.should_stop

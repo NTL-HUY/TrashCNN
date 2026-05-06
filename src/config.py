@@ -1,8 +1,7 @@
 """
-config.py – Cấu hình toàn bộ dự án
+config.py
 ====================================
-Một chỗ duy nhất để thay đổi đường dẫn, siêu tham số,
-và mapping từ 60 class TACO → 5 superclass.
+Model build from scratch: ResNet50 + FPN + RPN + ROI Head
 """
 
 import os
@@ -13,17 +12,17 @@ import os
 ROOT_DIR        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR        = os.path.join(ROOT_DIR, "data")
 ANNOTATION_FILE = os.path.join(DATA_DIR, "annotations.json")
-PROCESSED_DIR   = os.path.join(DATA_DIR, "processed")      # ảnh đã resize
+PROCESSED_DIR   = os.path.join(DATA_DIR, "processed")
 CHECKPOINT_DIR  = os.path.join(ROOT_DIR, "checkpoints")
 LOG_DIR         = os.path.join(ROOT_DIR, "logs")
 
 # ---------------------------------------------------------------------------
 # Tiền xử lý ảnh
 # ---------------------------------------------------------------------------
-IMAGE_MAX_SIZE  = 800
-IMAGE_MIN_SIZE  = 600
-MEAN            = [0.485, 0.456, 0.406]
-STD             = [0.229, 0.224, 0.225]
+IMAGE_MAX_SIZE = 800
+IMAGE_MIN_SIZE = 600
+MEAN           = [0.485, 0.456, 0.406]
+STD            = [0.229, 0.224, 0.225]
 
 # ---------------------------------------------------------------------------
 # Dataset split
@@ -36,22 +35,67 @@ RANDOM_SEED = 42
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
-BATCH_SIZE   = 2
-NUM_EPOCHS   = 50
-NUM_WORKERS  = 4
-FREEZE_BACKBONE     = False
-PRETRAINED_BACKBONE = True
-LEARNING_RATE          = 0.005
-BACKBONE_LEARNING_RATE = 0.0005
-MOMENTUM               = 0.9
-WEIGHT_DECAY           = 0.0005
-LR_STEP_SIZE = 8
-LR_GAMMA     = 0.5
+BATCH_SIZE  = 2
+NUM_EPOCHS  = 60
+NUM_WORKERS = 4
 
 # ---------------------------------------------------------------------------
-# Model
+# Optimizer – Adam
 # ---------------------------------------------------------------------------
-NUM_CLASSES = 6   # 5 superclass + 1 background (index 0)
+LEARNING_RATE = 0.001
+WEIGHT_DECAY  = 1e-4
+
+# ReduceLROnPlateau: giảm LR khi val loss plateau
+LR_PATIENCE = 5
+LR_FACTOR   = 0.5
+LR_MIN      = 1e-6
+
+# ---------------------------------------------------------------------------
+# Model architecture
+# ---------------------------------------------------------------------------
+NUM_CLASSES = 6   # 5 superclass + 1 background
+
+# ResNet50 backbone
+RESNET_LAYERS = [3, 4, 6, 3]   # số Bottleneck block tại layer1–4
+
+# FPN
+FPN_OUT_CHANNELS = 256
+
+# RPN
+RPN_ANCHOR_SIZES         = (32, 64, 128, 256, 512)
+RPN_ANCHOR_RATIOS        = (0.5, 1.0, 2.0)
+RPN_PRE_NMS_TOP_N        = {"training": 2000, "testing": 1000}
+RPN_POST_NMS_TOP_N       = {"training": 1000, "testing": 300}
+RPN_NMS_THRESH           = 0.7
+RPN_FG_IOU_THRESH        = 0.7
+RPN_BG_IOU_THRESH        = 0.3
+RPN_BATCH_SIZE_PER_IMAGE = 256
+RPN_POSITIVE_FRACTION    = 0.5
+
+# ROI Head
+ROI_BOX_SCORE_THRESH      = 0.05
+ROI_NMS_THRESH            = 0.5
+ROI_DETECTIONS_PER_IMG    = 100
+ROI_FG_IOU_THRESH         = 0.5
+ROI_BG_IOU_THRESH_HI      = 0.5
+ROI_BG_IOU_THRESH_LO      = 0.0
+ROI_BATCH_SIZE_PER_IMAGE  = 512
+ROI_POSITIVE_FRACTION     = 0.25
+ROI_POOLER_OUTPUT_SIZE    = 7
+ROI_POOLER_SAMPLING_RATIO = 2
+
+# Dropout
+DROPOUT_RATE = 0.3
+
+# ---------------------------------------------------------------------------
+# Data augmentation
+# ---------------------------------------------------------------------------
+AUGMENT_HFLIP_PROB  = 0.5
+AUGMENT_VFLIP_PROB  = 0.2
+AUGMENT_BRIGHTNESS  = 0.3
+AUGMENT_CONTRAST    = 0.3
+AUGMENT_SATURATION  = 0.3
+AUGMENT_HUE         = 0.1
 
 # ---------------------------------------------------------------------------
 # Superclass mapping
@@ -74,9 +118,6 @@ SUPERCLASS_COLORS = {
     5: (200,   0, 200),   # other      – tím
 }
 
-# ---------------------------------------------------------------------------
-# Mapping: tên category TACO (lowercase) → superclass index
-# ---------------------------------------------------------------------------
 TACO_TO_SUPERCLASS: dict[str, int] = {
     # 1: plastic
     "other plastic bottle": 1,
