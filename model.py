@@ -3,7 +3,7 @@ import torch.nn as nn
 from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 from torchvision.models.detection.rpn import AnchorGenerator
-
+from torchvision.models import ResNet50_Weights
 
 class SimpleBackbone(nn.Module):
     def __init__(self):
@@ -129,7 +129,7 @@ def build_model(num_classes=6):
         rpn_score_thresh=0.0,  # score tối thiểu để giữ anchor
 
         # Box/detection params — bạn đang thiếu phần này
-        box_score_thresh=0.3,  # loại box có score < 0.3
+        box_score_thresh=0.05,  # loại box có score < 0.3
         box_nms_thresh=0.5,  # NMS lần 2 sau khi head phân loại
         box_detections_per_img=50,  # tối đa 50 box trên 1 ảnh
     )

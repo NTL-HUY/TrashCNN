@@ -137,8 +137,13 @@ def train(args):
         writer.add_scalar("Val/mAP", map_result["map"].item(), epoch)
         writer.add_scalar("Val/mAP_50", map_result["map_50"].item(), epoch)
         writer.add_scalar("Val/mAP_75", map_result["map_75"].item(), epoch)
-        for i, ap in enumerate(map_result["map_per_class"]):
-            writer.add_scalar(f"Val/AP_{train_dataset.categories[i]['name']}", ap.item(), epoch)
+        per_class = map_result["map_per_class"]
+        if per_class.ndim > 0 and len(per_class) == len(train_dataset.categories):
+            for i, ap in enumerate(per_class):
+                writer.add_scalar(f"Val/AP_{train_dataset.categories[i]['name']}", ap.item(), epoch)
+        else:
+            print(f"   ⚠️ map_per_class chưa có dữ liệu (epoch {epoch + 1} model chưa detect được gì)")
+
         # pprint(metric.compute())
         # save model
         checkpoint = {

@@ -1,91 +1,235 @@
-import argparse
-
-import cv2
 import torch
-import numpy as np
-
-from dataset import TrashDataset
+from torch.utils.data import DataLoader
+from torchvision import transforms
+import argparse
+from dataset import TrashDataset, collate_fn
 from model import build_model
-
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--image_path", type=str, default=r"test_images/test.jpg", help="path to test image")
-    parser.add_argument("--image_size", type=int, default=640)
-    parser.add_argument("--checkpoint", type=str, default="trained_models/best_model.pth", help="path to log file")
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--data_path", type=str, default=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco")
+    parser.add_argument("--model_path", type=str, default="trained_models/best_model.pth")
+    parser.add_argument("--image_path", type=str, default=None)
+    parser.add_argument("--score_thresh", type=float, default=0.3)
+    parser.add_argument("--camera", action="store_true",
+                        help="Chạy real-time với webcam")
+    parser.add_argument("--camera_id", type=int, default=0,
+                        help="ID webcam (mặc định 0)")
     args = parser.parse_args()
     return args
 
-CLASS_NAMES = ["trash", "cardboard", "glass", "metal", "other", "paper", "plastic"]
-def deploy(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_model(num_classes=len(CLASS_NAMES)).to(device)
+COLORS = {
+    1: (255, 0, 0),
+    2: (0, 255, 0),
+    3: (0, 0, 255),
+    4: (255, 165, 0),
+    5: (128, 0, 128),
+}
 
-    checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint["model"])
-    model.eval()
-    origin_image = cv2.imread(args.image_path)
-    image = cv2.cvtColor(origin_image, cv2.COLOR_BGR2RGB)
-    h, w = image.shape[:2]
-    image = cv2.resize(image, (args.image_size, args.image_size))
-    image = image / 255.0
+def draw_boxes(img_np, boxes, labels, scores, id_to_name, score_thresh, show_score=True):
+    img = img_np.copy()
+    H, W = img.shape[:2]
 
-    # normalize
+    scale       = max(W, H) / 800
+    thickness   = max(2, int(2 * scale))
+    font_scale  = max(0.5, 0.6 * scale)
+    font_thick  = max(1, int(2 * scale))
+    pad         = max(5, int(8 * scale))
 
-    image = [image.transpose((2, 0, 1))]
-    image = [torch.tensor(image[0], dtype=torch.float32).to(device)]
-    with torch.no_grad():
-        prediction = model(image)
-    print(prediction)
-    pred = prediction[0]
-
-    boxes = pred["boxes"].cpu().numpy()
-    labels = pred["labels"].cpu().numpy()
-    scores = pred["scores"].cpu().numpy()
-
-    # ===== Scale bbox về ảnh gốc =====
-    scale_x = w / args.image_size
-    scale_y = h / args.image_size
-
-    boxes[:, [0, 2]] *= scale_x
-    boxes[:, [1, 3]] *= scale_y
-
-    # ===== Vẽ bbox =====
-    for box, label, score in zip(boxes, labels, scores):
-        if score < 0.3:   # threshold (có thể giảm xuống 0.1 để debug)
+    for box, lbl, score in zip(boxes, labels, scores):
+        if score < score_thresh:
             continue
+        x1, y1, x2, y2 = [int(v) for v in box]
+        color = COLORS.get(lbl, (255, 255, 255))
+        name  = id_to_name.get(lbl, "?")
 
-        x1, y1, x2, y2 = map(int, box)
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
 
-        class_name = CLASS_NAMES[label]
+        label_text = f"{name} {score:.2f}" if show_score else name
+        (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+        ty = max(y1 - pad, th + pad)
+        cv2.rectangle(img, (x1, ty - th - baseline), (x1 + tw, ty + baseline), color, -1)
+        cv2.putText(img, label_text, (x1, ty),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thick)
+    return img
 
-        # rectangle
-        cv2.rectangle(origin_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-        # label
-        text = f"{class_name}: {score:.2f}"
-        cv2.putText(origin_image, text,
-                    (x1, y1 - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5, (0, 255, 0), 2)
-    dataset = TrashDataset(
-        root=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco",
-        split="train"
+def test_single_image(args, model, device, id_to_name):
+    image_pil = Image.open(args.image_path).convert("RGB")
+    image_tensor = transforms.ToTensor()(image_pil).to(device)
+
+    with torch.no_grad():
+        pred = model([image_tensor])[0]
+
+    img_np = np.array(image_pil)
+
+    print(f"\n── Ảnh: {args.image_path} ──────────────────────")
+    print(f"Pred labels : {pred['labels'].tolist()}")
+    print(f"Pred classes: {[id_to_name.get(l.item(), '?') for l in pred['labels']]}")
+    print(f"Pred scores : {[round(s.item(), 3) for s in pred['scores']]}")
+    print(f"Num boxes   : {len(pred['boxes'])}")
+
+    pred_img = draw_boxes(
+        img_np,
+        boxes=[b.tolist() for b in pred["boxes"]],
+        labels=[l.item() for l in pred["labels"]],
+        scores=[s.item() for s in pred["scores"]],
+        id_to_name=id_to_name,
+        score_thresh=args.score_thresh
     )
 
-    # ===== Show =====
-    # cv2.imshow("Result", origin_image)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
-if __name__ == "__main__":
-    dataset = TrashDataset(
-        root=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco",
-        split="valid"
+    plt.figure(figsize=(10, 8))
+    plt.imshow(pred_img)
+    plt.title(f"Prediction — {args.image_path.split('/')[-1]}", fontsize=13)
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+
+
+def test_camera(args, model, device, id_to_name):
+    """Chạy real-time với webcam"""
+    cap = cv2.VideoCapture(args.camera_id)
+    if not cap.isOpened():
+        print(f"❌ Không mở được camera ID={args.camera_id}")
+        return
+
+    print(f"📷 Camera {args.camera_id} đang chạy — nhấn Q để thoát, S để chụp ảnh")
+
+    to_tensor = transforms.ToTensor()
+    frame_count = 0
+    snapshot_count = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("❌ Không đọc được frame")
+            break
+
+        frame_count += 1
+
+        # ── Inference mỗi 2 frame để giảm lag ──────────
+        if frame_count % 2 == 0:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            image_tensor = to_tensor(rgb).to(device)
+
+            with torch.no_grad():
+                pred = model([image_tensor])[0]
+
+            # Lưu pred để dùng lại frame bỏ qua
+            last_pred = pred
+
+        # ── Vẽ box lên frame ────────────────────────────
+        if 'last_pred' in locals():
+            rgb_drawn = draw_boxes(
+                cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                boxes=[b.tolist() for b in last_pred["boxes"]],
+                labels=[l.item() for l in last_pred["labels"]],
+                scores=[s.item() for s in last_pred["scores"]],
+                id_to_name=id_to_name,
+                score_thresh=args.score_thresh
+            )
+            display = cv2.cvtColor(rgb_drawn, cv2.COLOR_RGB2BGR)
+        else:
+            display = frame
+
+        # ── FPS ─────────────────────────────────────────
+        cv2.putText(display, f"thresh={args.score_thresh} | Q=quit S=snap",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+        cv2.imshow("Trash Detection — Camera", display)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            print("👋 Thoát camera")
+            break
+        elif key == ord('s'):
+            # ── Chụp ảnh lưu lại ────────────────────────
+            snapshot_path = f"snapshot_{snapshot_count:03d}.jpg"
+            cv2.imwrite(snapshot_path, display)
+            snapshot_count += 1
+            print(f"📸 Đã lưu {snapshot_path}")
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+def test_batch(args, model, device, id_to_name, val_dataset):
+    val_data_loader = DataLoader(
+        dataset=val_dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        collate_fn=collate_fn
     )
 
-    image , target = dataset[9]
-    print(image)
-    print(target)
-    # args = get_args()
-    # deploy(args)
+    images, targets = next(iter(val_data_loader))
+    images = [img.to(device) for img in images]
 
+    with torch.no_grad():
+        preds = model(images)
+
+    for i in range(len(images)):
+        print(f"\n── Ảnh {i} ──────────────────────────")
+        print(f"GT labels  : {targets[i]['labels'].tolist()}")
+        print(f"GT classes : {[id_to_name.get(l.item(), '?') for l in targets[i]['labels']]}")
+        print(f"Pred labels: {preds[i]['labels'].tolist()}")
+        print(f"Pred classes:{[id_to_name.get(l.item(), '?') for l in preds[i]['labels']]}")
+        print(f"Pred scores: {[round(s.item(), 3) for s in preds[i]['scores']]}")
+
+    fig, axes = plt.subplots(len(images), 2, figsize=(14, 5 * len(images)))
+    if len(images) == 1:
+        axes = [axes]
+
+    for i in range(len(images)):
+        img_np = images[i].cpu().permute(1, 2, 0).numpy()
+        img_np = (img_np * 255).astype(np.uint8)
+
+        gt_img = draw_boxes(
+            img_np,
+            boxes=[b.tolist() for b in targets[i]["boxes"]],
+            labels=[l.item() for l in targets[i]["labels"]],
+            scores=[1.0] * len(targets[i]["labels"]),
+            id_to_name=id_to_name,
+            score_thresh=0.0,
+            show_score=False
+        )
+        pred_img = draw_boxes(
+            img_np,
+            boxes=[b.tolist() for b in preds[i]["boxes"]],
+            labels=[l.item() for l in preds[i]["labels"]],
+            scores=[s.item() for s in preds[i]["scores"]],
+            id_to_name=id_to_name,
+            score_thresh=args.score_thresh
+        )
+
+        axes[i][0].imshow(gt_img);  axes[i][0].set_title(f"Ảnh {i} — Ground Truth"); axes[i][0].axis("off")
+        axes[i][1].imshow(pred_img); axes[i][1].set_title(f"Ảnh {i} — Prediction");   axes[i][1].axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ── Main ──────────────────────────────────────────────────────
+args = get_args()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+val_dataset = TrashDataset(root=args.data_path, split='test', transforms=transforms.ToTensor())
+model = build_model(num_classes=val_dataset.get_num_classes()).to(device)
+checkpoint = torch.load(args.model_path, map_location=device)
+print("========best map:", checkpoint['best_map'])
+model.load_state_dict(checkpoint["model"])
+model.eval()
+
+id_to_name = {cat["id"] + 1: cat["name"] for cat in val_dataset.categories}
+
+if args.camera:
+    test_camera(args, model, device, id_to_name)
+elif args.image_path:
+    test_single_image(args, model, device, id_to_name)
+else:
+    test_batch(args, model, device, id_to_name, val_dataset)
