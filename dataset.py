@@ -1,24 +1,34 @@
 """
-dataset.py - TACO Dataset Download, Filter & DataLoader
-Filters only 4 classes: plastic, metal, paper, glass
-Auto-downloads from TACO GitHub and maps supercategories to 4 target classes
+dataset.py - TACO Dataset Loader for Waste Detection
+Expects data already downloaded via TACO's official download.py.
+
+Directory layout expected (cùng cấp với train.py):
+  data/
+    annotations.json          ← file annotation gốc từ TACO download.py
+    batch_1/                  ← ảnh gốc (không dùng để train)
+    batch_2/
+    ...
+    processed/
+      batch_1/                ← ảnh đã tiền xử lí (600×800), dùng để train
+      batch_2/
+      ...
+
+Usage:
+  from dataset import build_dataloaders, NUM_CLASSES, TARGET_CLASSES
+  train_loader, val_loader, test_loader = build_dataloaders(data_dir="data")
 """
 
-import argparse
 import json
 import logging
 import random
-import time
 from pathlib import Path
 
 import numpy as np
-import requests
 import torch
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 from PIL import Image, ImageFile
 from torch.utils.data import Dataset, DataLoader
-from tqdm import tqdm
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -101,133 +111,86 @@ TACO_SUPERCATEGORY_MAP = {
 }
 
 TARGET_CLASSES = ["background", "plastic", "metal", "paper", "glass", "other"]
-CLASS_TO_IDX = {cls: idx for idx, cls in enumerate(TARGET_CLASSES)}
-NUM_CLASSES = len(TARGET_CLASSES)  # 6 (including background)
-
-# TACO annotation JSON URL (official)
-TACO_ANNOTATIONS_URL = "https://raw.githubusercontent.com/pedropro/TACO/master/data/annotations.json"
-TACO_DOWNLOAD_SCRIPT = "https://raw.githubusercontent.com/pedropro/TACO/master/data/download.py"
+CLASS_TO_IDX   = {cls: idx for idx, cls in enumerate(TARGET_CLASSES)}
+NUM_CLASSES    = len(TARGET_CLASSES)
 
 
 # ─────────────────────────────────────────────
-# Download Utilities
+# Parse annotations.json gốc của TACO
 # ─────────────────────────────────────────────
-def download_file(url: str, dest: Path, desc: str = "") -> bool:
-    """Download a file with progress bar and retry logic."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in range(3):
-        try:
-            response = requests.get(url, stream=True, timeout=30)
-            response.raise_for_status()
-            total = int(response.headers.get("content-length", 0))
-            with open(dest, "wb") as f, tqdm(
-                    total=total, unit="B", unit_scale=True, desc=desc or dest.name, leave=False
-            ) as bar:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    bar.update(len(chunk))
-            return True
-        except Exception as e:
-            logger.warning(f"Attempt {attempt + 1}/3 failed for {url}: {e}")
-            time.sleep(2 ** attempt)
-    return False
-
-
-def download_taco_dataset(data_dir: str = "data/taco") -> str:
+def load_taco_annotations(data_dir: Path):
     """
-    Downloads TACO annotations + images for only 5 target classes.
-    Returns path to processed annotations JSON.
-    """
-    data_dir = Path(data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
-    images_dir = data_dir / "images"
-    images_dir.mkdir(exist_ok=True)
+    Đọc annotations.json gốc (do TACO download.py tạo ra),
+    lọc chỉ lấy các ảnh/annotation thuộc 5 target class,
+    và resolve đường dẫn ảnh sang thư mục processed/.
 
+    Trả về:
+        images        : list[dict]  — mỗi dict có thêm key "processed_path"
+        img_ann_map   : dict        — image_id → list[annotation]
+        cat_id_to_target : dict     — category_id (int) → tên class (str)
+    """
     ann_path = data_dir / "annotations.json"
-    filtered_ann_path = data_dir / "annotations_filtered.json"
-
-    # ── Step 1: Download annotations ──
     if not ann_path.exists():
-        logger.info("Downloading TACO annotations...")
-        ok = download_file(TACO_ANNOTATIONS_URL, ann_path, "annotations.json")
-        if not ok:
-            raise RuntimeError("Failed to download TACO annotations. Check internet connection.")
-    else:
-        logger.info(f"Annotations already exist at {ann_path}")
+        raise FileNotFoundError(
+            f"Không tìm thấy file annotation: {ann_path}\n"
+            "Hãy chắc chắn bạn đã chạy download.py của TACO để tải dữ liệu."
+        )
 
-    # ── Step 2: Parse & filter annotations ──
-    logger.info("Parsing and filtering annotations for 5 target classes...")
     with open(ann_path, "r") as f:
         coco_data = json.load(f)
 
-    # Build category_id → target class mapping
-    cat_id_to_target = {}
+    # ── Build category_id → target class ──
+    cat_id_to_target: dict[int, str] = {}
     for cat in coco_data["categories"]:
         supercategory = cat.get("supercategory", "")
-        name = cat.get("name", "")
-        target = TACO_SUPERCATEGORY_MAP.get(supercategory) or TACO_SUPERCATEGORY_MAP.get(name)
+        name          = cat.get("name", "")
+        target = (
+            TACO_SUPERCATEGORY_MAP.get(supercategory)
+            or TACO_SUPERCATEGORY_MAP.get(name)
+        )
         if target:
             cat_id_to_target[cat["id"]] = target
 
-    logger.info(f"Mapped {len(cat_id_to_target)} TACO categories to 5 target classes")
+    logger.info(f"Mapped {len(cat_id_to_target)} TACO categories → {len(set(cat_id_to_target.values()))} target classes")
 
-    # Filter annotations
-    valid_anns = [a for a in coco_data["annotations"] if a["category_id"] in cat_id_to_target]
+    # ── Lọc annotations ──
+    valid_anns    = [a for a in coco_data["annotations"] if a["category_id"] in cat_id_to_target]
     valid_img_ids = set(a["image_id"] for a in valid_anns)
-    valid_images = [img for img in coco_data["images"] if img["id"] in valid_img_ids]
-
-    logger.info(f"Filtered: {len(valid_images)} images | {len(valid_anns)} annotations")
+    valid_images  = [img for img in coco_data["images"] if img["id"] in valid_img_ids]
 
     # Class distribution
     class_counts = {cls: 0 for cls in TARGET_CLASSES[1:]}
     for ann in valid_anns:
-        cls = cat_id_to_target[ann["category_id"]]
-        class_counts[cls] += 1
+        class_counts[cat_id_to_target[ann["category_id"]]] += 1
+    logger.info(f"Filtered: {len(valid_images)} images | {len(valid_anns)} annotations")
     logger.info(f"Class distribution: {class_counts}")
 
-    # ── Step 3: Download images ──
-    logger.info(f"Downloading {len(valid_images)} images...")
-    failed = []
-    for img_info in tqdm(valid_images, desc="Downloading images"):
-        img_path = images_dir / img_info["file_name"].replace("/", "_")
-        if img_path.exists():
-            continue
-        url = img_info.get("flickr_url") or img_info.get("coco_url", "")
-        if not url:
-            failed.append(img_info["id"])
-            continue
-        ok = download_file(url, img_path, desc="")
-        if not ok:
-            failed.append(img_info["id"])
-
-    if failed:
-        logger.warning(f"Failed to download {len(failed)} images. They will be skipped.")
-        # Remove images and annotations for failed downloads
-        failed_set = set(failed)
-        valid_images = [img for img in valid_images if img["id"] not in failed_set]
-        valid_anns = [a for a in valid_anns if a["image_id"] not in failed_set]
-
-    # Update file_name to local paths
+    # ── Resolve đường dẫn sang processed/ ──
+    # annotations.json lưu file_name dạng "batch_N/image.jpg"
+    processed_dir = data_dir / "processed"
+    missing = 0
     for img_info in valid_images:
-        img_info["local_path"] = str(images_dir / img_info["file_name"].replace("/", "_"))
+        # file_name trong TACO thường có dạng "batch_1/000001.jpg"
+        processed_path = processed_dir / img_info["file_name"]
+        img_info["processed_path"] = str(processed_path)
+        if not processed_path.exists():
+            missing += 1
 
-    # ── Step 4: Save filtered annotations ──
-    filtered_data = {
-        "images": valid_images,
-        "annotations": valid_anns,
-        "categories": [
-            {"id": CLASS_TO_IDX[cls], "name": cls, "supercategory": cls}
-            for cls in TARGET_CLASSES[1:]
-        ],
-        "cat_id_to_target": {str(k): v for k, v in cat_id_to_target.items()},
-        "original_categories": coco_data["categories"],
-    }
-    with open(filtered_ann_path, "w") as f:
-        json.dump(filtered_data, f, indent=2)
+    if missing > 0:
+        logger.warning(
+            f"{missing}/{len(valid_images)} ảnh không tìm thấy trong {processed_dir}. "
+            "Các ảnh này sẽ được thay bằng ảnh trắng khi load."
+        )
 
-    logger.info(f"Saved filtered annotations to {filtered_ann_path}")
-    logger.info(f"Final: {len(valid_images)} images | {len(valid_anns)} annotations")
-    return str(filtered_ann_path)
+    # ── Build image_id → annotations ──
+    img_ann_map: dict[int, list] = {}
+    for ann in valid_anns:
+        img_ann_map.setdefault(ann["image_id"], []).append(ann)
+
+    # Chỉ giữ ảnh có ít nhất 1 annotation hợp lệ
+    valid_images = [img for img in valid_images if img["id"] in img_ann_map]
+
+    return valid_images, img_ann_map, cat_id_to_target
 
 
 # ─────────────────────────────────────────────
@@ -235,23 +198,17 @@ def download_taco_dataset(data_dir: str = "data/taco") -> str:
 # ─────────────────────────────────────────────
 class Augmentor:
     """
-    Custom augmentation pipeline compatible with bounding boxes.
-    Applied only during training.
+    Augmentation pipeline tương thích với bounding box.
+    Chỉ áp dụng khi training. KHÔNG resize vì ảnh đã được
+    tiền xử lí về 600×800 trong thư mục processed/.
     """
 
-    def __init__(self, min_size=800, max_size=1333):
-        self.min_size = min_size
-        self.max_size = max_size
-
-    def __call__(self, image, target):
-        # ── Resize (always applied, before any augmentation) ──
-        image, target = self._resize(image, target)
-
+    def __call__(self, image: Image.Image, target: dict):
         # Random horizontal flip
         if random.random() > 0.5:
             image, target = self._hflip(image, target)
 
-        # Random brightness/contrast/saturation
+        # Random brightness / contrast / saturation / hue
         if random.random() > 0.5:
             image = TF.adjust_brightness(image, brightness_factor=random.uniform(0.7, 1.3))
         if random.random() > 0.5:
@@ -261,41 +218,15 @@ class Augmentor:
         if random.random() > 0.3:
             image = TF.adjust_hue(image, hue_factor=random.uniform(-0.1, 0.1))
 
-        # Random grayscale
+        # Random grayscale (hiếm)
         if random.random() > 0.9:
             image = TF.rgb_to_grayscale(image, num_output_channels=3)
             image = TF.to_pil_image(np.array(image))
 
         return image, target
 
-    def _resize(self, image, target):
-        w, h = image.size
-
-        # Tính scale factor theo shorter side
-        scale = self.min_size / min(w, h)
-
-        # Nếu longer side vượt max_size → thu nhỏ lại
-        if max(w, h) * scale > self.max_size:
-            scale = self.max_size / max(w, h)
-
-        new_w = int(round(w * scale))
-        new_h = int(round(h * scale))
-
-        image = TF.resize(image, [new_h, new_w])
-
-        # Scale bounding boxes theo cùng tỉ lệ
-        if len(target["boxes"]) > 0:
-            boxes = target["boxes"].clone().float()
-            boxes[:, [0, 2]] *= (new_w / w)   # x1, x2
-            boxes[:, [1, 3]] *= (new_h / h)   # y1, y2
-            # Clamp để tránh out-of-bound sau khi làm tròn số
-            boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(0, new_w)
-            boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(0, new_h)
-            target["boxes"] = boxes
-
-        return image, target
-
-    def _hflip(self, image, target):
+    @staticmethod
+    def _hflip(image: Image.Image, target: dict):
         w, _ = image.size
         image = TF.hflip(image)
         boxes = target["boxes"].clone()
@@ -304,148 +235,132 @@ class Augmentor:
         return image, target
 
 
-def resize_image(image: "Image.Image", target: dict, min_size: int = 800, max_size: int = 1333):
-    w, h = image.size
-    scale = min_size / min(w, h)
-    if max(w, h) * scale > max_size:
-        scale = max_size / max(w, h)
-    new_w = int(round(w * scale))
-    new_h = int(round(h * scale))
-    image = TF.resize(image, [new_h, new_w])
-    if len(target["boxes"]) > 0:
-        boxes = target["boxes"].clone().float()
-        boxes[:, [0, 2]] *= (new_w / w)
-        boxes[:, [1, 3]] *= (new_h / h)
-        boxes[:, [0, 2]] = boxes[:, [0, 2]].clamp(0, new_w)
-        boxes[:, [1, 3]] = boxes[:, [1, 3]].clamp(0, new_h)
-        target["boxes"] = boxes
-    return image, target
-
-
-def get_transform(train: bool):
-    """Returns transform pipeline."""
-    transforms = []
-    transforms.append(T.ToTensor())
-    return T.Compose(transforms)
+# ─────────────────────────────────────────────
+# Transform pipeline
+# ─────────────────────────────────────────────
+def get_transform() -> T.Compose:
+    """PIL Image → normalized tensor [C, H, W]."""
+    return T.Compose([T.ToTensor()])
 
 
 # ─────────────────────────────────────────────
-# Dataset Class
+# Dataset
 # ─────────────────────────────────────────────
 class TACODataset(Dataset):
     """
-    TACO Dataset for Faster R-CNN.
-    Loads filtered annotations and returns images + targets.
+    TACO Dataset cho Faster R-CNN.
+    Đọc ảnh từ data/processed/batch_N/ (đã tiền xử lí 600×800).
+    Annotation được parse trực tiếp từ data/annotations.json gốc.
     """
 
     def __init__(
-            self,
-            ann_file: str,
-            split: str = "train",
-            train_ratio: float = 0.8,
-            val_ratio: float = 0.1,
-            transforms=None,
-            augment: bool = False,
-            seed: int = 42,
-            min_area: float = 100.0,  # filter tiny boxes
+        self,
+        data_dir: str,
+        split: str = "train",
+        train_ratio: float = 0.8,
+        val_ratio: float = 0.1,
+        transforms=None,
+        augment: bool = False,
+        seed: int = 42,
+        min_area: float = 100.0,
     ):
         self.transforms = transforms
-        self.augment = augment
-        self.augmentor = Augmentor() if augment else None
-        self.min_area = min_area
+        self.augmentor  = Augmentor() if augment else None
+        self.min_area   = min_area
 
-        with open(ann_file, "r") as f:
-            data = json.load(f)
+        data_dir = Path(data_dir)
+        all_images, self.img_ann_map, self.cat_id_to_target = load_taco_annotations(data_dir)
 
-        self.cat_id_to_target = {int(k): v for k, v in data["cat_id_to_target"].items()}
-
-        # Build image_id → annotations index
-        self.img_ann_map = {}
-        for ann in data["annotations"]:
-            iid = ann["image_id"]
-            self.img_ann_map.setdefault(iid, []).append(ann)
-
-        # Filter images that have at least 1 valid annotation
-        all_images = [img for img in data["images"] if img["id"] in self.img_ann_map]
-
-        # Reproducible split
+        # ── Train / Val / Test split (reproducible) ──
         rng = random.Random(seed)
         rng.shuffle(all_images)
-        n = len(all_images)
+        n       = len(all_images)
         n_train = int(n * train_ratio)
-        n_val = int(n * val_ratio)
+        n_val   = int(n * val_ratio)
 
         if split == "train":
             self.images = all_images[:n_train]
         elif split == "val":
-            self.images = all_images[n_train:n_train + n_val]
+            self.images = all_images[n_train : n_train + n_val]
         elif split == "test":
-            self.images = all_images[n_train + n_val:]
+            self.images = all_images[n_train + n_val :]
         else:
-            raise ValueError(f"Unknown split: {split}")
+            raise ValueError(f"Unknown split: {split}. Phải là 'train', 'val', hoặc 'test'.")
 
-        logger.info(f"[{split.upper()}] {len(self.images)} images loaded")
+        logger.info(f"[{split.upper()}] {len(self.images)} images")
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, idx):
-        img_info = self.images[idx]
-        img_path = img_info.get("local_path", img_info.get("file_name", ""))
+        img_info   = self.images[idx]
+        img_path   = img_info["processed_path"]
 
-        # Load image
+        # ── Load ảnh ──
         try:
             image = Image.open(img_path).convert("RGB")
         except Exception as e:
-            logger.warning(f"Cannot load image {img_path}: {e}. Using blank image.")
-            image = Image.new("RGB", (640, 480), color=(128, 128, 128))
+            logger.warning(f"Không load được ảnh {img_path}: {e}. Dùng ảnh trắng thay thế.")
+            image = Image.new("RGB", (800, 600), color=(128, 128, 128))
 
-        w, h = image.size
+        w, h = image.size  # width=800, height=600 (đã tiền xử lí)
+
+        # ── Parse annotations ──
         anns = self.img_ann_map.get(img_info["id"], [])
-
         boxes, labels, areas, iscrowd = [], [], [], []
+
         for ann in anns:
             target_cls = self.cat_id_to_target.get(ann["category_id"])
             if target_cls is None:
                 continue
-            x, y, bw, bh = ann["bbox"]
             # COCO format: [x, y, width, height] → [x1, y1, x2, y2]
-            x1, y1 = max(0, x), max(0, y)
-            x2, y2 = min(w, x + bw), min(h, y + bh)
+            x, y, bw, bh = ann["bbox"]
+
+            # Scale bbox theo tỉ lệ resize đã thực hiện trong tiền xử lí
+            # annotations.json vẫn giữ toạ độ gốc → cần scale về 600×800
+            orig_w = img_info.get("width",  w)
+            orig_h = img_info.get("height", h)
+            scale_x = w / orig_w
+            scale_y = h / orig_h
+
+            x1 = max(0.0, x  * scale_x)
+            y1 = max(0.0, y  * scale_y)
+            x2 = min(w,  (x + bw) * scale_x)
+            y2 = min(h,  (y + bh) * scale_y)
+
             area = (x2 - x1) * (y2 - y1)
             if area < self.min_area or x2 <= x1 or y2 <= y1:
                 continue
+
             boxes.append([x1, y1, x2, y2])
             labels.append(CLASS_TO_IDX[target_cls])
             areas.append(area)
             iscrowd.append(ann.get("iscrowd", 0))
 
         if len(boxes) == 0:
-            # Return a dummy sample (handled in collate)
-            boxes = torch.zeros((0, 4), dtype=torch.float32)
-            labels = torch.zeros((0,), dtype=torch.int64)
-            areas = torch.zeros((0,), dtype=torch.float32)
-            iscrowd = torch.zeros((0,), dtype=torch.int64)
+            boxes   = torch.zeros((0, 4), dtype=torch.float32)
+            labels  = torch.zeros((0,),   dtype=torch.int64)
+            areas   = torch.zeros((0,),   dtype=torch.float32)
+            iscrowd = torch.zeros((0,),   dtype=torch.int64)
         else:
-            boxes = torch.tensor(boxes, dtype=torch.float32)
-            labels = torch.tensor(labels, dtype=torch.int64)
-            areas = torch.tensor(areas, dtype=torch.float32)
+            boxes   = torch.tensor(boxes,   dtype=torch.float32)
+            labels  = torch.tensor(labels,  dtype=torch.int64)
+            areas   = torch.tensor(areas,   dtype=torch.float32)
             iscrowd = torch.tensor(iscrowd, dtype=torch.int64)
 
         target = {
-            "boxes": boxes,
-            "labels": labels,
+            "boxes":    boxes,
+            "labels":   labels,
             "image_id": torch.tensor([img_info["id"]]),
-            "area": areas,
-            "iscrowd": iscrowd,
+            "area":     areas,
+            "iscrowd":  iscrowd,
         }
 
-        # Resize + Augmentation
+        # ── Augmentation (train only) ──
         if self.augmentor is not None and len(target["boxes"]) > 0:
             image, target = self.augmentor(image, target)
-        else:
-            image, target = resize_image(image, target, min_size=800, max_size=1333)
 
+        # ── To tensor ──
         if self.transforms is not None:
             image = self.transforms(image)
 
@@ -456,7 +371,7 @@ class TACODataset(Dataset):
 # Collate function
 # ─────────────────────────────────────────────
 def collate_fn(batch):
-    """Custom collate: returns list of images and list of targets."""
+    """Custom collate: trả về list of images và list of targets."""
     return tuple(zip(*batch))
 
 
@@ -464,31 +379,40 @@ def collate_fn(batch):
 # DataLoader factory
 # ─────────────────────────────────────────────
 def build_dataloaders(
-        ann_file: str,
-        batch_size: int = 4,
-        num_workers: int = 2,
-        train_ratio: float = 0.8,
-        val_ratio: float = 0.1,
-        seed: int = 42,
+    data_dir: str = "data",
+    batch_size: int = 4,
+    num_workers: int = 2,
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    seed: int = 42,
 ):
-    """Build train/val/test DataLoaders."""
-    train_transform = get_transform(train=True)
-    val_transform = get_transform(train=False)
+    """
+    Tạo train / val / test DataLoader từ thư mục data/.
+
+    Args:
+        data_dir   : thư mục chứa annotations.json và processed/
+        batch_size : batch size cho training
+        num_workers: số worker cho DataLoader
+        train_ratio: tỉ lệ dữ liệu train
+        val_ratio  : tỉ lệ dữ liệu validation
+        seed       : random seed để reproducible split
+    """
+    transform = get_transform()
 
     train_ds = TACODataset(
-        ann_file, split="train",
+        data_dir, split="train",
         train_ratio=train_ratio, val_ratio=val_ratio,
-        transforms=train_transform, augment=True, seed=seed
+        transforms=transform, augment=True, seed=seed,
     )
     val_ds = TACODataset(
-        ann_file, split="val",
+        data_dir, split="val",
         train_ratio=train_ratio, val_ratio=val_ratio,
-        transforms=val_transform, augment=False, seed=seed
+        transforms=transform, augment=False, seed=seed,
     )
     test_ds = TACODataset(
-        ann_file, split="test",
+        data_dir, split="test",
         train_ratio=train_ratio, val_ratio=val_ratio,
-        transforms=val_transform, augment=False, seed=seed
+        transforms=transform, augment=False, seed=seed,
     )
 
     train_loader = DataLoader(
@@ -508,17 +432,3 @@ def build_dataloaders(
     )
 
     return train_loader, val_loader, test_loader
-
-
-# ─────────────────────────────────────────────
-# CLI: Download dataset
-# ─────────────────────────────────────────────
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download & prepare TACO dataset")
-    parser.add_argument("--data_dir", type=str, default="data/taco", help="Directory to save dataset")
-    args = parser.parse_args()
-
-    ann_file = download_taco_dataset(data_dir=args.data_dir)
-    print(f"\n✅ Dataset ready: {ann_file}")
-    print(f"   Classes: {TARGET_CLASSES[1:]}")
-    print(f"   Num classes (with background): {NUM_CLASSES}")
