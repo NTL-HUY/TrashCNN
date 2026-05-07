@@ -6,13 +6,11 @@ from pprint import pprint
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 import torch
 from torch.utils.data import DataLoader
-from torchvision import transforms
 from torch.utils.tensorboard import SummaryWriter
 from dataset import TrashDataset, collate_fn
 from model import build_model
 from tqdm.autonotebook import tqdm
 import numpy as np
-
 
 
 def get_args():
@@ -38,9 +36,7 @@ def train(args):
     train_dataset = TrashDataset(
         root=args.data_path,
         split='train',
-        transforms=transforms.ToTensor()
     )
-
     train_data_loader = DataLoader(
         dataset=train_dataset,
         batch_size=args.batch_size,
@@ -48,10 +44,10 @@ def train(args):
         collate_fn=collate_fn,
         shuffle=True
     )
+
     val_dataset = TrashDataset(
         root=args.data_path,
         split='test',
-        transforms=transforms.ToTensor()
     )
     val_data_loader = DataLoader(
         dataset=val_dataset,
@@ -59,7 +55,8 @@ def train(args):
         num_workers=args.num_workers,
         collate_fn=collate_fn
     )
-    # tensor board
+
+    # TensorBoard
     if os.path.isdir(args.log_path):
         shutil.rmtree(args.log_path)
     os.makedirs(args.log_path)
@@ -67,17 +64,16 @@ def train(args):
     if not os.path.isdir(args.save_path):
         os.makedirs(args.save_path)
 
-
-
     writer = SummaryWriter(log_dir=args.log_path)
     print(f"TensorBoard logs → {args.log_path}")
     print(f"  Run: tensorboard --logdir {args.log_path}\n")
+
     model = build_model(num_classes=train_dataset.get_num_classes()).to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
     best_map = -1
-
     start_epoch = 0
+
     if args.resume_train_path is not None and os.path.exists(args.resume_train_path):
         print(f"Load checkpoint from {args.resume_train_path}")
         checkpoint = torch.load(args.resume_train_path, map_location=device)
@@ -98,43 +94,33 @@ def train(args):
             loss_components = model(images, targets)
             losses = sum(loss for loss in loss_components.values())
 
-            optimizer.zero_grad()  # tat luu tru value cua gradient trong buffer ?
-            losses.backward()  # tinh dao ham (gradient) (quy tac chain rule)
-            optimizer.step()  # w = w-lr*grad , lay gia tri cua gradient de update weight
+            optimizer.zero_grad()
+            losses.backward()
+            optimizer.step()
 
-            # print
             loss_str = " | ".join([f"{k}: {v:.4f}" for k, v in loss_components.items()])
             train_progress_bar.set_description(
                 f"Epoch {epoch + 1}/{args.epochs} | Total: {losses:.4f} | {loss_str}"
             )
-
             train_loss.append(losses.item())
-            avg_loss = np.mean(train_loss)  # tensor.item(), lay value that cua tensor
+            avg_loss = np.mean(train_loss)
             writer.add_scalar("Train/Loss", avg_loss, epoch * len(train_data_loader) + iter)
 
         scheduler.step()
         writer.add_scalar("Train/LR", scheduler.get_last_lr()[0], epoch)
         # EVAL
-        # tinh MAP
         model.eval()
         val_progress_bar = tqdm(val_data_loader, colour="yellow")
         metric = MeanAveragePrecision(iou_type="bbox", backend="faster_coco_eval")
         for iter, (images, targets) in enumerate(val_progress_bar):
             images = [image.to(device) for image in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-            # if iter == 20:
-            #     exit(0)
-            with torch.no_grad():  # khong tinh backward()
+            with torch.no_grad():
                 predictions = model(images)
-                # pprint(predictions)
-                # print("PRED:", predictions[0])
-                # print("GT:", targets[0])
-                # print(predictions[0]["labels"])
-                # print(targets[0]["labels"])
                 metric.update(predictions, targets)
-                # post process
+
         map_result = metric.compute()
-        writer.add_scalar("Val/mAP", map_result["map"].item(), epoch)
+        writer.add_scalar("Val/mAP",    map_result["map"].item(),    epoch)
         writer.add_scalar("Val/mAP_50", map_result["map_50"].item(), epoch)
         writer.add_scalar("Val/mAP_75", map_result["map_75"].item(), epoch)
         per_class = map_result["map_per_class"]
@@ -142,25 +128,20 @@ def train(args):
             for i, ap in enumerate(per_class):
                 writer.add_scalar(f"Val/AP_{train_dataset.categories[i]['name']}", ap.item(), epoch)
         else:
-            print(f"   ⚠️ map_per_class chưa có dữ liệu (epoch {epoch + 1} model chưa detect được gì)")
+            print(f"   ⚠️ map_per_class chưa có dữ liệu (epoch {epoch + 1})")
 
-        # pprint(metric.compute())
-        # save model
         checkpoint = {
-            "epoch": epoch + 1,
-            "model": model.state_dict(),
+            "epoch":     epoch + 1,
+            "model":     model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
-            "best_map": best_map
+            "best_map":  best_map
         }
         if map_result["map"] > best_map:
-            # triển khai
-            save_path = os.path.join(args.save_path, "best_model.pth")
-            torch.save(checkpoint, save_path)
+            torch.save(checkpoint, os.path.join(args.save_path, "best_model.pth"))
             best_map = map_result["map"]
-        # train tiếp
-        save_path = os.path.join(args.save_path, "last_model.pth")
-        torch.save(checkpoint, save_path)
+        torch.save(checkpoint, os.path.join(args.save_path, "last_model.pth"))
+
         avg_loss = np.mean(train_loss)
         print(f"\n Epoch {epoch + 1} summary:")
         print(f"   Avg total loss : {avg_loss:.4f}")
