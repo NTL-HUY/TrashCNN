@@ -16,8 +16,8 @@ import numpy as np
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--num_workers", type=int, default=0)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=0.0005)
     parser.add_argument("--data_path", type=str, default=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco")
     parser.add_argument("--image_size", type=int, default=416)
