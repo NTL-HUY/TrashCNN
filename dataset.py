@@ -2,7 +2,6 @@ import torch
 import os
 import json
 import random
-import numpy as np
 from PIL import Image
 from collections import defaultdict
 import torchvision.transforms.functional as TF
@@ -32,28 +31,22 @@ class TrainAugmentation:
             image = TF.hflip(image)
             if len(boxes):
                 boxes = boxes.clone()
-                boxes[:, 0] = W - boxes[:, 2]
-                boxes[:, 2] = W - boxes[:, 0].clone() + (W - boxes[:, 2])
-                x1 = W - boxes[:, 2].clone()
-                x2 = W - boxes[:, 0].clone()
-                boxes[:, 0] = x1
-                boxes[:, 2] = x2
+                x1_new = W - boxes[:, 2]
+                x2_new = W - boxes[:, 0]
+                boxes[:, 0] = x1_new
+                boxes[:, 2] = x2_new
 
         # ── 2. Color Jitter ────────────────────────────────────────
         if random.random() < self.p_color:
-            # brightness
             brightness_factor = random.uniform(0.6, 1.4)
             image = TF.adjust_brightness(image, brightness_factor)
 
-            # contrast
             contrast_factor = random.uniform(0.6, 1.4)
             image = TF.adjust_contrast(image, contrast_factor)
 
-            # saturation
             saturation_factor = random.uniform(0.6, 1.4)
             image = TF.adjust_saturation(image, saturation_factor)
 
-            # hue
             hue_factor = random.uniform(-0.1, 0.1)
             image = TF.adjust_hue(image, hue_factor)
 
@@ -65,32 +58,26 @@ class TrainAugmentation:
         if random.random() < self.p_crop and len(boxes):
             W2, H2 = image.size
 
-            # Random crop
-            scale = random.uniform(0.7, 1.0)
+            scale  = random.uniform(0.7, 1.0)
             crop_w = int(W2 * scale)
             crop_h = int(H2 * scale)
 
-            # Random top - left
             left   = random.randint(0, W2 - crop_w)
             top    = random.randint(0, H2 - crop_h)
             right  = left + crop_w
             bottom = top  + crop_h
 
-            # Clip bbox vào vùng crop
             new_boxes = boxes.clone()
-            new_boxes[:, 0] = new_boxes[:, 0].clamp(min=left,  max=right)   # x1
-            new_boxes[:, 1] = new_boxes[:, 1].clamp(min=top,   max=bottom)  # y1
-            new_boxes[:, 2] = new_boxes[:, 2].clamp(min=left,  max=right)   # x2
-            new_boxes[:, 3] = new_boxes[:, 3].clamp(min=top,   max=bottom)  # y2
+            new_boxes[:, 0] = new_boxes[:, 0].clamp(min=left,   max=right)   # x1
+            new_boxes[:, 1] = new_boxes[:, 1].clamp(min=top,    max=bottom)  # y1
+            new_boxes[:, 2] = new_boxes[:, 2].clamp(min=left,   max=right)   # x2
+            new_boxes[:, 3] = new_boxes[:, 3].clamp(min=top,    max=bottom)  # y2
 
-            # Bỏ bbox invalid
             keep = (new_boxes[:, 2] - new_boxes[:, 0] > 1) & \
                    (new_boxes[:, 3] - new_boxes[:, 1] > 1)
 
-            # Crop nếu có ít nhất 1 bbox valid
             if keep.sum() > 0:
-                image  = TF.crop(image, top, left, crop_h, crop_w)
-
+                image     = TF.crop(image, top, left, crop_h, crop_w)
                 new_boxes = new_boxes[keep]
                 new_boxes[:, 0] -= left
                 new_boxes[:, 2] -= left
@@ -124,7 +111,7 @@ class TrashDataset(torch.utils.data.Dataset):
 
         # ── 1. Xóa trash và other ─────────────────────────
         REMOVE_IDS = {0, 4}
-        coco["categories"] = [c for c in coco["categories"] if c["id"] not in REMOVE_IDS]
+        coco["categories"]  = [c for c in coco["categories"]  if c["id"] not in REMOVE_IDS]
         coco["annotations"] = [a for a in coco["annotations"] if a["category_id"] not in REMOVE_IDS]
 
         # ── 2. Reindex category ID ────────────────────────
@@ -150,6 +137,7 @@ class TrashDataset(torch.utils.data.Dataset):
         self.img_to_anns = defaultdict(list)
         for ann in coco["annotations"]:
             self.img_to_anns[ann["image_id"]].append(ann)
+
         # ── 5. Gán vào self ───────────────────────────────
         self.images = [
             img for img in coco["images"]
@@ -168,7 +156,7 @@ class TrashDataset(torch.utils.data.Dataset):
         boxes, labels = [], []
         for ann in anns:
             x, y, w, h = ann["bbox"]
-            if w > 1 and h > 1:  # bỏ bbox lỗi
+            if w > 1 and h > 1:
                 boxes.append([x, y, x + w, y + h])
                 labels.append(self.cat_id_to_label[ann["category_id"]])
 
