@@ -30,6 +30,46 @@ def get_args():
     args = parser.parse_args()
     return args
 
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+
+def get_train_transform():
+    return A.Compose([
+        A.Resize(416, 416),
+
+        A.HorizontalFlip(p=0.5),
+
+        A.RandomBrightnessContrast(
+            brightness_limit=0.2,
+            contrast_limit=0.2,
+            p=0.5
+        ),
+
+        A.HueSaturationValue(p=0.3),
+
+        A.GaussianBlur(p=0.2),
+
+        ToTensorV2()
+    ],
+        bbox_params=A.BboxParams(
+            format='pascal_voc',
+            label_fields=['labels']
+        )
+    )
+
+
+def get_val_transform():
+    return A.Compose([
+        A.Resize(416, 416),
+        ToTensorV2()
+    ],
+        bbox_params=A.BboxParams(
+            format='pascal_voc',
+            label_fields=['labels']
+        )
+    )
+
 
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -38,7 +78,7 @@ def train(args):
     train_dataset = TrashDataset(
         root=args.data_path,
         split='train',
-        transforms=transforms.ToTensor()
+        transforms=get_train_transform()
     )
 
     train_data_loader = DataLoader(
@@ -51,7 +91,7 @@ def train(args):
     val_dataset = TrashDataset(
         root=args.data_path,
         split='test',
-        transforms=transforms.ToTensor()
+        transforms=get_val_transform()
     )
     val_data_loader = DataLoader(
         dataset=val_dataset,
@@ -66,8 +106,6 @@ def train(args):
 
     if not os.path.isdir(args.save_path):
         os.makedirs(args.save_path)
-
-
 
     writer = SummaryWriter(log_dir=args.log_path)
     print(f"TensorBoard logs → {args.log_path}")
