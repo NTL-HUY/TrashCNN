@@ -7,6 +7,7 @@ from torchvision.models import ResNet50_Weights
 from torchvision.ops import FeaturePyramidNetwork
 from torchvision.models import resnet18
 
+
 class ResNet18FPN(nn.Module):
     def __init__(self):
         super().__init__()
@@ -20,10 +21,10 @@ class ResNet18FPN(nn.Module):
             resnet.maxpool
         )
 
-        self.layer1 = resnet.layer1   # C2
-        self.layer2 = resnet.layer2   # C3
-        self.layer3 = resnet.layer3   # C4
-        self.layer4 = resnet.layer4   # C5
+        self.layer1 = resnet.layer1  # C2
+        self.layer2 = resnet.layer2  # C3
+        self.layer3 = resnet.layer3  # C4
+        self.layer4 = resnet.layer4  # C5
 
         self.fpn = FeaturePyramidNetwork(
             in_channels_list=[64, 128, 256, 512],
@@ -33,7 +34,6 @@ class ResNet18FPN(nn.Module):
         self.out_channels = 256
 
     def forward(self, x):
-
         x = self.conv1(x)
 
         c2 = self.layer1(x)
@@ -51,6 +51,7 @@ class ResNet18FPN(nn.Module):
         fpn_feats = self.fpn(feats)
 
         return fpn_feats
+
 
 def build_model(num_classes=6):
     # Option A: ResNet-50 pretrained + FPN (mAP cao nhất)
@@ -75,7 +76,8 @@ def build_model(num_classes=6):
         backbone=backbone,
         num_classes=num_classes,
         rpn_anchor_generator=anchor_generator,
-
+        min_size=416,
+        max_size=416,
         # Các tham số RPN — nếu không truyền thì dùng mặc định
         rpn_pre_nms_top_n_train=2000,  # lấy top 2000 trước NMS lúc train
         rpn_pre_nms_top_n_test=1000,  # lấy top 1000 trước NMS lúc inference
