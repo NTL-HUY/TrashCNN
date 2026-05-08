@@ -5,7 +5,7 @@ import random
 from PIL import Image
 from collections import defaultdict
 
-
+import numpy as np
 class TrashDataset(torch.utils.data.Dataset):
     def __init__(self, root, split="train", transforms=None, seed=42):
         self.root = os.path.join(root, split)
@@ -79,7 +79,26 @@ class TrashDataset(torch.utils.data.Dataset):
         }
 
         if self.transforms:
-            image = self.transforms(image)
+            transformed = self.transforms(
+                image=np.array(image),
+                bboxes=boxes.tolist(),
+                labels=labels.tolist()
+            )
+
+            image = transformed["image"]
+
+            boxes = torch.tensor(
+                transformed["bboxes"],
+                dtype=torch.float32
+            )
+
+            labels = torch.tensor(
+                transformed["labels"],
+                dtype=torch.int64
+            )
+
+            target["boxes"] = boxes
+            target["labels"] = labels
 
         return image, target
 
@@ -93,3 +112,4 @@ class TrashDataset(torch.utils.data.Dataset):
 
 def collate_fn(batch):
     return tuple(zip(*batch))
+
