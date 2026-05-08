@@ -49,7 +49,7 @@ def get_train_transform():
         A.HueSaturationValue(p=0.3),
 
         A.GaussianBlur(p=0.2),
-
+        A.ToFloat(max_value=255.0),
         ToTensorV2()
     ],
         bbox_params=A.BboxParams(
@@ -62,6 +62,7 @@ def get_train_transform():
 def get_val_transform():
     return A.Compose([
         A.Resize(416, 416),
+        A.ToFloat(max_value=255.0),
         ToTensorV2()
     ],
         bbox_params=A.BboxParams(
@@ -160,28 +161,15 @@ def train(args):
         for iter, (images, targets) in enumerate(val_progress_bar):
             images = [image.to(device) for image in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-            # if iter == 20:
-            #     exit(0)
+
             with torch.no_grad():  # khong tinh backward()
                 predictions = model(images)
-                # pprint(predictions)
-                # print("PRED:", predictions[0])
-                # print("GT:", targets[0])
-                # print(predictions[0]["labels"])
-                # print(targets[0]["labels"])
+
                 metric.update(predictions, targets)
-                # post process
         map_result = metric.compute()
         writer.add_scalar("Val/mAP", map_result["map"].item(), epoch)
         writer.add_scalar("Val/mAP_50", map_result["map_50"].item(), epoch)
         writer.add_scalar("Val/mAP_75", map_result["map_75"].item(), epoch)
-        per_class = map_result["map_per_class"]
-        if per_class.ndim > 0 and len(per_class) == len(train_dataset.categories):
-            for i, ap in enumerate(per_class):
-                writer.add_scalar(f"Val/AP_{train_dataset.categories[i]['name']}", ap.item(), epoch)
-        else:
-            print(f"   ⚠️ map_per_class chưa có dữ liệu (epoch {epoch + 1} model chưa detect được gì)")
-
         # pprint(metric.compute())
         # save model
         checkpoint = {
@@ -200,10 +188,16 @@ def train(args):
         save_path = os.path.join(args.save_path, "last_model.pth")
         torch.save(checkpoint, save_path)
         avg_loss = np.mean(train_loss)
-        print(f"\n Epoch {epoch + 1} summary:")
-        print(f"   Avg total loss : {avg_loss:.4f}")
-        print(f"   LR hiện tại    : {scheduler.get_last_lr()[0]:.6f}")
-        print(f"Epoch {epoch + 1} - mAP: {map_result['map']:.4f}")
+        print("\n" + "=" * 60)
+        print(f"Epoch {epoch + 1}/{args.epochs} completed")
+        print("-" * 60)
+        print(f"Avg Train Loss : {avg_loss:.4f}")
+        print(f"mAP@[0.5:0.95] : {map_result['map']:.4f}")
+        print(f"mAP@0.50       : {map_result['map_50']:.4f}")
+        print(f"mAP@0.75       : {map_result['map_75']:.4f}")
+        print(f"Best mAP       : {best_map:.4f}")
+        print(f"Learning Rate  : {scheduler.get_last_lr()[0]:.6f}")
+
     writer.close()
 
 
