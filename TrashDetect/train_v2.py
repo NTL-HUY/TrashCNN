@@ -172,12 +172,14 @@ def train(args):
         writer.add_scalar("Val/mAP_75", map_result["map_75"].item(), epoch)
         # pprint(metric.compute())
         # save model
+
+
         checkpoint = {
             "epoch": epoch + 1,
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
-            "best_map": best_map
+            "best_map": map_result["map"]
         }
         if map_result["map"] > best_map:
             # triển khai

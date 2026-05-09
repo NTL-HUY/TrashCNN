@@ -1,13 +1,26 @@
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
 import argparse
 from dataset import TrashDataset, collate_fn
-from model import build_model
+from custome_backbone import build_model
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
+
+def get_val_transform():
+    return A.Compose([
+        A.ToFloat(max_value=255.0),
+        ToTensorV2()
+    ],
+        bbox_params=A.BboxParams(
+            format='pascal_voc',
+            label_fields=['labels']
+        )
+    )
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -62,12 +75,22 @@ def draw_boxes(img_np, boxes, labels, scores, id_to_name, score_thresh, show_sco
 
 def test_single_image(args, model, device, id_to_name):
     image_pil = Image.open(args.image_path).convert("RGB")
-    image_tensor = transforms.ToTensor()(image_pil).to(device)
+    img_np_original = np.array(image_pil)
+
+    # ✅ Dùng đúng transform có resize 416×416 như lúc train
+    transform = get_val_transform()
+    transformed = transform(
+        image=img_np_original,
+        bboxes=[],      # không có GT box, truyền rỗng
+        labels=[]
+    )
+    image_tensor = transformed["image"].to(device)  # shape: (3, 416, 416)
 
     with torch.no_grad():
         pred = model([image_tensor])[0]
 
-    img_np = np.array(image_pil)
+    # ✅ Vẽ lên ảnh đã resize (khớp với tọa độ model output)
+    img_for_draw = (image_tensor.cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
 
     print(f"\n── Ảnh: {args.image_path} ──────────────────────")
     print(f"Pred labels : {pred['labels'].tolist()}")
@@ -76,7 +99,7 @@ def test_single_image(args, model, device, id_to_name):
     print(f"Num boxes   : {len(pred['boxes'])}")
 
     pred_img = draw_boxes(
-        img_np,
+        img_for_draw,
         boxes=[b.tolist() for b in pred["boxes"]],
         labels=[l.item() for l in pred["labels"]],
         scores=[s.item() for s in pred["scores"]],
@@ -164,7 +187,8 @@ def test_batch(args, model, device, id_to_name, val_dataset):
         dataset=val_dataset,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        shuffle=True
     )
 
     images, targets = next(iter(val_data_loader))
@@ -218,7 +242,7 @@ def test_batch(args, model, device, id_to_name, val_dataset):
 args = get_args()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-val_dataset = TrashDataset(root=args.data_path, split='test', transforms=transforms.ToTensor())
+val_dataset = TrashDataset(root=args.data_path, split='test', transforms=get_val_transform())
 model = build_model(num_classes=val_dataset.get_num_classes()).to(device)
 checkpoint = torch.load(args.model_path, map_location=device)
 print("========best map:", checkpoint['best_map'])
