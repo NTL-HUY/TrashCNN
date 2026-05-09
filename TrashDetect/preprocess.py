@@ -13,7 +13,7 @@ Các bước:
 Usage:
     python preprocess.py               # dùng Config mặc định
 """
-
+import argparse
 import copy
 import json
 import os
@@ -22,7 +22,7 @@ import shutil
 import warnings
 from collections import Counter, defaultdict
 from typing import Optional
-from TrashDetect.config import Config
+from config import Config
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -414,6 +414,66 @@ def run_all(cfg: Config = CFG):
     print("\n" + "═"*65)
     print(f"  Done. Output → {cfg.OUTPUT_DIR}")
     print("═"*65)
-    
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="COCO Dataset Preprocessing Pipeline"
+    )
+
+    parser.add_argument(
+        "--taco-path",
+        type=str,
+        default=CFG.DATA_TACO_PATH,
+        help="Path tới dataset TACO"
+    )
+
+    parser.add_argument(
+        "--glass-path",
+        type=str,
+        default=CFG.DATA_GLASS_PATH,
+        help="Path tới dataset Glass"
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=CFG.OUTPUT_DIR,
+        help="Output directory"
+    )
+
+    parser.add_argument(
+        "--splits",
+        nargs="+",
+        default=CFG.SPLITS,
+        help="Danh sách split cần xử lý"
+    )
+
+    parser.add_argument(
+        "--no-glass",
+        action="store_true",
+        help="Không merge glass dataset"
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=CFG.SEED,
+        help="Random seed"
+    )
+
+    return parser.parse_args()
+
 if __name__ == "__main__":
+    args = parse_args()
+
+    CFG.DATA_TACO_PATH = args.taco_path
+    CFG.DATA_GLASS_PATH = args.glass_path
+    CFG.OUTPUT_DIR = args.output_dir
+    CFG.SPLITS = args.splits
+    CFG.SEED = args.seed
+
+    if args.no_glass:
+        CFG.DATA_GLASS_PATH = None
     run_all()
+

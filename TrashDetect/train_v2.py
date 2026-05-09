@@ -89,7 +89,7 @@ def train(args):
     )
     val_dataset = TrashDataset(
         root=args.data_path,
-        split='test',
+        split='valid',
         transforms=get_val_transform()
     )
     val_data_loader = DataLoader(

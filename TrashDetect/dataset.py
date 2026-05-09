@@ -35,7 +35,10 @@ class TrashDataset(Dataset):
         self.categories = coco["categories"]
 
         # cat_id (0-based) → label cho model (1-based, 0 = background)
-        self.cat_id_to_label = {c["id"]: c["id"] + 1 for c in self.categories}
+        self.cat_id_to_label = {
+            c["id"]: i + 1
+            for i, c in enumerate(self.categories)
+        }
 
         self.img_to_anns: dict[int, list] = defaultdict(list)
         for ann in coco["annotations"]:
@@ -89,8 +92,8 @@ class TrashDataset(Dataset):
 
     def get_label_map(self) -> dict:
         return {
-            c["id"] + 1: c["name"]
-            for c in self.categories
+            i + 1: c["name"]
+            for i, c in enumerate(self.categories)
         }
 
 
