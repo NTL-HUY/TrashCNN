@@ -32,7 +32,10 @@ def load_backbone_weights(backbone, weights_path):
         remapped_state_dict[new_k] = v
 
     backbone_state = backbone.body.state_dict()
-    matched = {k: v for k, v in remapped_state_dict.items() if k in backbone_state and backbone_state[k].shape == v.shape}
+    matched = {
+        k: v for k, v in remapped_state_dict.items()
+        if k in backbone_state and backbone_state[k].shape == v.shape
+    }
     missing = [k for k in backbone_state if k not in matched]
     unexpected = [k for k in remapped_state_dict if k not in backbone_state]
 
@@ -52,13 +55,31 @@ def load_backbone_weights(backbone, weights_path):
     return backbone
 
 
+def freeze_backbone_selective(backbone):
+    for param in backbone.parameters():
+        param.requires_grad = False
+
+    for name, param in backbone.body.named_parameters():
+        if name.startswith("layer3.") or name.startswith("layer4."):
+            param.requires_grad = True
+
+    for param in backbone.fpn.parameters():
+        param.requires_grad = True
+
+    # Thống kê
+    total = sum(p.numel() for p in backbone.parameters())
+    trainable = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
+    print(f"  Backbone — Total: {total:,} | Trainable: {trainable:,} | Frozen: {total - trainable:,}")
+
+    return backbone
+
+
 def build_model(num_classes, my_weights_path):
     backbone = resnet_fpn_backbone('resnet50', pretrained=False)
 
     backbone = load_backbone_weights(backbone, my_weights_path)
 
-    for param in backbone.parameters():
-        param.requires_grad = False
+    backbone = freeze_backbone_selective(backbone)
 
     model = FasterRCNN(backbone, num_classes=num_classes)
     return model

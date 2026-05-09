@@ -17,8 +17,11 @@ def get_args():
     parser = argparse.ArgumentParser(description="Train Faster R-CNN on TACO dataset")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--lr", type=float, default=0.0005)
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--lr_head", type=float, default=0.0005,
+                        help="LR cho detection head (RPN + ROI)")
+    parser.add_argument("--lr_backbone", type=float, default=0.00005,
+                        help="LR cho backbone layer3/layer4/FPN")
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight_decay", type=float, default=0.0005)
     parser.add_argument("--data_path", type=str, default="TrashDetect/TACO dataset.v1i.coco")
@@ -57,6 +60,36 @@ def get_transforms(image_size, is_train=True):
             min_area=1.0,
             min_visibility=0.1,
         ))
+
+
+def build_optimizer(model, args):
+    backbone_params = []
+    head_params = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if "backbone" in name:
+            backbone_params.append(param)
+        else:
+            head_params.append(param)
+
+    param_groups = [
+        {"params": head_params,     "lr": args.lr_head,     "name": "head"},
+        {"params": backbone_params, "lr": args.lr_backbone, "name": "backbone"},
+    ]
+
+    optimizer = torch.optim.SGD(
+        param_groups,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay
+    )
+
+    print(f"Optimizer — Head LR: {args.lr_head} | Backbone LR: {args.lr_backbone}")
+    print(f"  Head params    : {sum(p.numel() for p in head_params):,}")
+    print(f"  Backbone params: {sum(p.numel() for p in backbone_params):,}")
+
+    return optimizer
 
 
 def train_one_epoch(model, optimizer, data_loader, device, epoch, writer):
@@ -115,32 +148,42 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Dataset với Albumentations transforms
-    train_ds = TrashDataset(args.data_path, split='train', transforms=get_transforms(args.image_size, is_train=True), image_size=args.image_size)
-    val_ds = TrashDataset(args.data_path, split='test', transforms=get_transforms(args.image_size, is_train=False), image_size=args.image_size)
+    # Dataset
+    train_ds = TrashDataset(
+        args.data_path, split='train',
+        transforms=get_transforms(args.image_size, is_train=True),
+        image_size=args.image_size
+    )
+    val_ds = TrashDataset(
+        args.data_path, split='test',
+        transforms=get_transforms(args.image_size, is_train=False),
+        image_size=args.image_size
+    )
+    print(f"Train: {len(train_ds)} images | Val: {len(val_ds)} images")
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                              num_workers=args.num_workers, collate_fn=collate_fn)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
-                            num_workers=args.num_workers, collate_fn=collate_fn)
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.num_workers, collate_fn=collate_fn
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.num_workers, collate_fn=collate_fn
+    )
 
-    model = build_model(num_classes=train_ds.get_num_classes(), my_weights_path=args.backbone_weights)
+    model = build_model(
+        num_classes=train_ds.get_num_classes(),
+        my_weights_path=args.backbone_weights
+    )
     model.to(device)
 
-    params = [p for p in model.parameters() if p.requires_grad]
-    print(f"Trainable parameters: {sum(p.numel() for p in params):,}")
+    optimizer = build_optimizer(model, args)
 
-    optimizer = torch.optim.SGD(
-        params, lr=args.lr,
-        momentum=args.momentum,
-        weight_decay=args.weight_decay
-    )
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
     start_epoch = 0
     best_map = -1.0
 
-    # Resume training nếu có checkpoint
+    # Resume
     if args.resume and os.path.isfile(args.resume):
         print(f"Resuming from checkpoint: {args.resume}")
         checkpoint = torch.load(args.resume, map_location=device)
@@ -165,14 +208,19 @@ def main():
         mAP = metrics['map'].item()
         mAP_50 = metrics.get('map_50', torch.tensor(0.0)).item()
 
+        lr_head = optimizer.param_groups[0]['lr']
+        lr_bb   = optimizer.param_groups[1]['lr']
+
         print(f"\nEpoch {epoch + 1}/{args.epochs}")
-        print(f"  Loss : {avg_loss:.4f}")
-        print(f"  mAP  : {mAP:.4f}  |  mAP@50: {mAP_50:.4f}")
-        print(f"  LR   : {scheduler.get_last_lr()[0]:.6f}")
+        print(f"  Loss      : {avg_loss:.4f}")
+        print(f"  mAP       : {mAP:.4f}  |  mAP@50: {mAP_50:.4f}")
+        print(f"  LR head   : {lr_head:.6f}  |  LR backbone: {lr_bb:.6f}")
 
         writer.add_scalar("Train/Epoch_Loss", avg_loss, epoch)
         writer.add_scalar("Val/mAP", mAP, epoch)
         writer.add_scalar("Val/mAP_50", mAP_50, epoch)
+        writer.add_scalar("LR/head", lr_head, epoch)
+        writer.add_scalar("LR/backbone", lr_bb, epoch)
 
         checkpoint = {
             "model": model.state_dict(),
