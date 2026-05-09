@@ -33,13 +33,13 @@ def get_args():
     parser.add_argument(
         "--log_path",
         type=str,
-        default="tensorboard/TrashClassifier"
+        default="TrashClassify/tensorboard/TrashClassifier"
     )
 
     parser.add_argument(
         "--save_path",
         type=str,
-        default="trained_models"
+        default="TrashClassify/trained_models"
     )
 
     args = parser.parse_args(args=[])
