@@ -65,36 +65,67 @@ class TrashDataset(torch.utils.data.Dataset):
         for ann in anns:
             x, y, w, h = ann["bbox"]
 
-            # Tỷ lệ: scale_x = image_size / orig_w
-            x1 = x * (self.image_size / orig_w)
-            y1 = y * (self.image_size / orig_h)
-            x2 = (x + w) * (self.image_size / orig_w)
-            y2 = (y + h) * (self.image_size / orig_h)
+            # Tọa độ gốc (chưa scale) theo ảnh gốc
+            x1 = x
+            y1 = y
+            x2 = x + w
+            y2 = y + h
 
-            x1 = max(0, min(x1, self.image_size - 1))
-            y1 = max(0, min(y1, self.image_size - 1))
-            x2 = max(x1 + 1, min(x2, self.image_size))
-            y2 = max(y1 + 1, min(y2, self.image_size))
+            # Clamp trong biên ảnh gốc
+            x1 = max(0.0, min(x1, orig_w))
+            y1 = max(0.0, min(y1, orig_h))
+            x2 = max(0.0, min(x2, orig_w))
+            y2 = max(0.0, min(y2, orig_h))
 
             if (x2 - x1) >= 1 and (y2 - y1) >= 1:
                 boxes.append([x1, y1, x2, y2])
                 labels.append(self.cat_id_to_label[ann["category_id"]])
 
         if len(boxes) > 0:
-            boxes = torch.as_tensor(boxes, dtype=torch.float32)
-            labels = torch.as_tensor(labels, dtype=torch.int64)
+            boxes_np = np.array(boxes, dtype=np.float32)
+            labels_list = labels
         else:
-            boxes = torch.zeros((0, 4), dtype=torch.float32)
-            labels = torch.zeros((0,), dtype=torch.int64)
-
-        target = {
-            "boxes": boxes,
-            "labels": labels,
-            "image_id": torch.tensor([img_info["id"]])
-        }
+            boxes_np = np.zeros((0, 4), dtype=np.float32)
+            labels_list = []
 
         if self.transforms:
-            image = self.transforms(image)
+            image_np = np.array(image)
+            transformed = self.transforms(
+                image=image_np,
+                bboxes=boxes_np.tolist() if len(boxes_np) > 0 else [],
+                labels=labels_list
+            )
+            image = transformed["image"]           # Tensor [C, H, W]
+            transformed_boxes = transformed["bboxes"]
+            transformed_labels = transformed["labels"]
+
+            if len(transformed_boxes) > 0:
+                boxes_tensor = torch.as_tensor(transformed_boxes, dtype=torch.float32)
+                labels_tensor = torch.as_tensor(transformed_labels, dtype=torch.int64)
+            else:
+                boxes_tensor = torch.zeros((0, 4), dtype=torch.float32)
+                labels_tensor = torch.zeros((0,), dtype=torch.int64)
+        else:
+            boxes_scaled = []
+            for x1, y1, x2, y2 in boxes_np:
+                boxes_scaled.append([
+                    x1 * self.image_size / orig_w,
+                    y1 * self.image_size / orig_h,
+                    x2 * self.image_size / orig_w,
+                    y2 * self.image_size / orig_h,
+                ])
+            if len(boxes_scaled) > 0:
+                boxes_tensor = torch.as_tensor(boxes_scaled, dtype=torch.float32)
+                labels_tensor = torch.as_tensor(labels_list, dtype=torch.int64)
+            else:
+                boxes_tensor = torch.zeros((0, 4), dtype=torch.float32)
+                labels_tensor = torch.zeros((0,), dtype=torch.int64)
+
+        target = {
+            "boxes": boxes_tensor,
+            "labels": labels_tensor,
+            "image_id": torch.tensor([img_info["id"]])
+        }
 
         return image, target
 
