@@ -3,7 +3,7 @@ import torch.nn as nn
 from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 from torchvision.models.detection.rpn import AnchorGenerator
-from torchvision.models import ResNet50_Weights
+from torchvision.models import ResNet50_Weights, ResNet18_Weights
 from torchvision.ops import FeaturePyramidNetwork
 from torchvision.models import resnet18
 
@@ -12,7 +12,7 @@ class ResNet18FPN(nn.Module):
     def __init__(self):
         super().__init__()
 
-        resnet = resnet18(weights=None)
+        resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
 
         self.conv1 = nn.Sequential(
             resnet.conv1,
@@ -58,12 +58,7 @@ def build_model(num_classes=6):
     backbone = ResNet18FPN()
 
     anchor_generator = AnchorGenerator(
-        sizes=(
-            (16,),
-            (32,),
-            (64,),
-            (128,)
-        ),
+        sizes=((32,), (64,), (128,), (256,)),
         aspect_ratios=(
             (0.5, 1.0, 2.0),
             (0.5, 1.0, 2.0),
@@ -76,8 +71,8 @@ def build_model(num_classes=6):
         backbone=backbone,
         num_classes=num_classes,
         rpn_anchor_generator=anchor_generator,
-        min_size=416,
-        max_size=416,
+        min_size=640,
+        max_size=640,
         # Các tham số RPN — nếu không truyền thì dùng mặc định
         rpn_pre_nms_top_n_train=2000,  # lấy top 2000 trước NMS lúc train
         rpn_pre_nms_top_n_test=1000,  # lấy top 1000 trước NMS lúc inference

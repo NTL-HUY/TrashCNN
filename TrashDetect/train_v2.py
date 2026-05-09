@@ -1,13 +1,14 @@
 import argparse
 import os
 import shutil
-from pprint import pprint
 
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 import torch
 from torch.utils.data import DataLoader
-from torchvision import transforms
 from torch.utils.tensorboard import SummaryWriter
+
 from dataset import TrashDataset, collate_fn
 from model import build_model
 from tqdm.autonotebook import tqdm
@@ -22,7 +23,7 @@ def get_args():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=0.0005)
     parser.add_argument("--data_path", type=str, default=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco")
-    parser.add_argument("--image_size", type=int, default=416)
+    parser.add_argument("--image_size", type=int, default=640)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--log_path", type=str, default="tensorboard/TrashCNN")
     parser.add_argument("--save_path", type=str, default="trained_models")
@@ -30,13 +31,10 @@ def get_args():
     args = parser.parse_args()
     return args
 
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 
-
-def get_train_transform():
+def get_train_transform(args):
     return A.Compose([
-        A.Resize(416, 416),
+        A.Resize(args.image_size, args.image_size),
 
         A.HorizontalFlip(p=0.5),
 
@@ -61,7 +59,7 @@ def get_train_transform():
 
 def get_val_transform():
     return A.Compose([
-        A.Resize(416, 416),
+        A.Resize(args.image_size, args.image_size),
         A.ToFloat(max_value=255.0),
         ToTensorV2()
     ],

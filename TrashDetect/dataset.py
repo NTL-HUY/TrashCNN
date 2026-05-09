@@ -1,115 +1,99 @@
-import torch
-import os
+
 import json
-import random
-from PIL import Image
+import os
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
-class TrashDataset(torch.utils.data.Dataset):
-    def __init__(self, root, split="train", transforms=None, seed=42):
-        self.root = os.path.join(root, split)
+import torch
+from PIL import Image
+from torch.utils.data import Dataset
+
+
+class TrashDataset(Dataset):
+    def __init__(
+        self,
+        root: str,
+        split: str = "train",
+        transforms=None,
+        annotation_file: str = "_annotations.processed.coco.json",
+    ):
+
+        self.split_dir  = Path(root) / split
         self.transforms = transforms
 
-        with open(os.path.join(self.root, "_annotations.coco.json")) as f:
+        ann_path = self.split_dir / annotation_file
+        if not ann_path.exists():
+            raise FileNotFoundError(
+                f"Annotation file not found: {ann_path}\n"
+                f"Chạy preprocess.py trước để tạo file này."
+            )
+
+        with open(ann_path, encoding="utf-8") as f:
             coco = json.load(f)
 
-        # ── 1. Xóa trash và other ─────────────────────────
-        REMOVE_IDS = {0, 4}
-        coco["categories"] = [c for c in coco["categories"] if c["id"] not in REMOVE_IDS]
-        coco["annotations"] = [a for a in coco["annotations"] if a["category_id"] not in REMOVE_IDS]
-
-        # ── 2. Reindex category ID ────────────────────────
-        old_to_new = {}
-        for i, cat in enumerate(coco["categories"]):
-            old_to_new[cat["id"]] = i
-            cat["id"] = i
-        for ann in coco["annotations"]:
-            ann["category_id"] = old_to_new[ann["category_id"]]
-
-        # ── 3. Undersample plastic ────────────────────────
-        if split == "train":
-            plastic_id = next(c["id"] for c in coco["categories"] if c["name"] == "plastic")
-            plastic = [a for a in coco["annotations"] if a["category_id"] == plastic_id]
-            others = [a for a in coco["annotations"] if a["category_id"] != plastic_id]
-            random.seed(seed)
-            coco["annotations"] = others + random.sample(plastic, min(500, len(plastic)))
-
-        # ── 4. Lọc ảnh còn annotation ────────────────────
-        used_ids = {a["image_id"] for a in coco["annotations"]}
-        coco["images"] = [img for img in coco["images"] if img["id"] in used_ids]
-
-        self.img_to_anns = defaultdict(list)
-        for ann in coco["annotations"]:
-            self.img_to_anns[ann["image_id"]].append(ann)
-        # ── 5. Gán vào self ───────────────────────────────
-        self.images = [
-            img for img in coco["images"]
-            if len(self.img_to_anns.get(img["id"], [])) > 0
-        ]
         self.categories = coco["categories"]
 
-        # Label bắt đầu từ 1 (0 là background cho Faster RCNN)
-        self.cat_id_to_label = {cat["id"]: cat["id"] + 1 for cat in self.categories}
+        # cat_id (0-based) → label cho model (1-based, 0 = background)
+        self.cat_id_to_label = {c["id"]: c["id"] + 1 for c in self.categories}
 
-        self.img_to_anns = defaultdict(list)
+        self.img_to_anns: dict[int, list] = defaultdict(list)
         for ann in coco["annotations"]:
             self.img_to_anns[ann["image_id"]].append(ann)
 
-    def __getitem__(self, idx):
+        self.images = [
+            img for img in coco["images"]
+            if self.img_to_anns.get(img["id"])
+        ]
+
+    def __len__(self) -> int:
+        return len(self.images)
+
+    def __getitem__(self, idx: int):
         img_info = self.images[idx]
-        image = Image.open(os.path.join(self.root, img_info["file_name"])).convert("RGB")
 
-        anns = self.img_to_anns.get(img_info["id"], [])
+        img_path = self.split_dir / img_info["file_name"]
+        image    = Image.open(img_path).convert("RGB")
+
         boxes, labels = [], []
-        for ann in anns:
+        for ann in self.img_to_anns[img_info["id"]]:
             x, y, w, h = ann["bbox"]
-            if w > 0 and h > 0:  # bỏ bbox lỗi
-                boxes.append([x, y, x + w, y + h])
-                labels.append(self.cat_id_to_label[ann["category_id"]])
+            boxes.append([x, y, x + w, y + h])
+            labels.append(self.cat_id_to_label[ann["category_id"]])
 
-        boxes = torch.zeros((0, 4), dtype=torch.float32) if not boxes \
-            else torch.as_tensor(boxes, dtype=torch.float32)
+        boxes  = torch.as_tensor(boxes,  dtype=torch.float32)
         labels = torch.as_tensor(labels, dtype=torch.int64)
 
         target = {
-            "boxes": boxes,
-            "labels": labels,
-            "image_id": torch.tensor([img_info["id"]])
+            "boxes":    boxes,
+            "labels":   labels,
+            "image_id": torch.tensor([img_info["id"]]),
         }
 
         if self.transforms:
             transformed = self.transforms(
-                image=np.array(image),
-                bboxes=boxes.tolist(),
-                labels=labels.tolist()
+                image   = np.array(image),
+                bboxes  = boxes.tolist(),
+                labels  = labels.tolist(),
             )
-
-            image = transformed["image"]
-
-            boxes = torch.tensor(
-                transformed["bboxes"],
-                dtype=torch.float32
-            )
-
-            labels = torch.tensor(
-                transformed["labels"],
-                dtype=torch.int64
-            )
-
-            target["boxes"] = boxes
-            target["labels"] = labels
+            image          = transformed["image"]
+            target["boxes"]  = torch.as_tensor(transformed["bboxes"],  dtype=torch.float32)
+            target["labels"] = torch.as_tensor(transformed["labels"],  dtype=torch.int64)
+        else:
+            image = torch.as_tensor(np.array(image), dtype=torch.float32).permute(2, 0, 1) / 255.0
 
         return image, target
 
-    def __len__(self):
-        return len(self.images)
-
-    def get_num_classes(self):
-        # +1 cho background
+    def get_num_classes(self) -> int:
         return len(self.categories) + 1
+
+    def get_label_map(self) -> dict:
+        return {
+            c["id"] + 1: c["name"]
+            for c in self.categories
+        }
+
 
 
 def collate_fn(batch):
     return tuple(zip(*batch))
-
