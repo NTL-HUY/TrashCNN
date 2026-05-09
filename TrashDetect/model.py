@@ -60,7 +60,7 @@ def freeze_backbone_selective(backbone):
         param.requires_grad = False
 
     for name, param in backbone.body.named_parameters():
-        if name.startswith("layer3.") or name.startswith("layer4."):
+        if name.startswith("layer4."):
             param.requires_grad = True
 
     for param in backbone.fpn.parameters():
