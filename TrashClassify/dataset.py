@@ -8,7 +8,7 @@ transform = transforms.Compose([
 ])
 
 dataset = ImageFolder(
-    root=r"\TrashType_Image_Dataset",
+    root="TrashClassify/TrashType_Image_Dataset",
     transform=transform
 )
 

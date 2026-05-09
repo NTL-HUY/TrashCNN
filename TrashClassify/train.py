@@ -25,7 +25,7 @@ def get_args():
     parser.add_argument(
         "--data_path",
         type=str,
-        default=r"TrashType_Image_Dataset"
+        default="TrashClassify/TrashType_Image_Dataset"
     )
 
     parser.add_argument("--image_size", type=int, default=224)
