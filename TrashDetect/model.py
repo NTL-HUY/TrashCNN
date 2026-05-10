@@ -29,13 +29,13 @@ class ConvBlock(nn.Module):
 
 
 class SimpleCNNBackbone(nn.Module):
-    def __init__(self, fpn_channels: int = 128):
+    def __init__(self, fpn_channels: int = 256):
         super().__init__()
 
         self.block1 = nn.Sequential(ConvBlock(3, 32),   nn.MaxPool2d(2, 2))
         self.block2 = nn.Sequential(ConvBlock(32, 64),  nn.MaxPool2d(2, 2))
         self.block3 = nn.Sequential(ConvBlock(64, 128), nn.MaxPool2d(2, 2))
-        self.block4 = ConvBlock(128, 256)
+        self.block4 = nn.Sequential(ConvBlock(128, 256), nn.MaxPool2d(2, 2))
 
         self.fpn = FeaturePyramidNetwork(
             in_channels_list=[32, 64, 128, 256],
@@ -48,7 +48,7 @@ class SimpleCNNBackbone(nn.Module):
         c3 = self.block2(c2)
         c4 = self.block3(c3)
         c5 = self.block4(c4)
-        return self.fpn({"c2": c2, "c3": c3, "c4": c4, "c5": c5})
+        return self.fpn({"0": c2, "1": c3, "2": c4, "3": c5})
 
 # PRETRAINED BACKBONE
 class ResNet18FPN(nn.Module):
@@ -83,7 +83,6 @@ class ResNet18FPN(nn.Module):
         c3 = self.layer2(c2)
         c4 = self.layer3(c3)
         c5 = self.layer4(c4)
-
         feats = {
             "0": c2,
             "1": c3,
@@ -92,7 +91,6 @@ class ResNet18FPN(nn.Module):
         }
 
         fpn_feats = self.fpn(feats)
-
         return fpn_feats
 
 # BUILD MODEL
