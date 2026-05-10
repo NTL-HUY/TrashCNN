@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
+from TrashDetect.config import Config
 from dataset import TrashDataset, collate_fn
 from model import build_model
 from tqdm.autonotebook import tqdm
@@ -31,7 +32,7 @@ def get_args():
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=0.005)
-    parser.add_argument("--data_path", type=str, default=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco")
+    parser.add_argument("--data_path", type=str, default=Config.DATA_TACO_PATH)
     parser.add_argument("--image_size", type=int, default=640)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--log_path", type=str, default="tensorboard")
@@ -47,17 +48,13 @@ def get_args():
 def get_train_transform(args):
     return A.Compose([
         A.Resize(args.image_size, args.image_size),
-
         A.HorizontalFlip(p=0.5),
-
         A.RandomBrightnessContrast(
             brightness_limit=0.2,
             contrast_limit=0.2,
             p=0.5
         ),
-
         A.HueSaturationValue(p=0.3),
-
         A.GaussianBlur(p=0.2),
         A.ToFloat(max_value=255.0),
         ToTensorV2()
@@ -152,7 +149,6 @@ def train(args):
         split='train',
         transforms=get_train_transform(args)
     )
-
     train_data_loader = DataLoader(
         dataset=train_dataset,
         batch_size=args.batch_size,
@@ -295,7 +291,7 @@ def train(args):
         if map_val > best_map:
             best_map = map_val
             checkpoint["best_map"] = best_map
-            torch.save(checkpoint, os.path.join(args.save_path, "best_model.pth"))
+            torch.save(checkpoint, os.path.join(args.save_path, "resnet18.pth"))
 
         print(f"\n{'=' * 60}")
         print(f"Epoch {epoch + 1}/{args.epochs} | Time: {epoch_time:.0f}s")

@@ -19,14 +19,14 @@ IMAGE_SIZE = 640
 MODEL_REGISTRY = {
     "resnet18fpn": {
         "label":        "ResNet-18 FPN",
-        "path":         "trained_models/best_model.pth",
-        "backbone":     "resnet18fpn",
+        "path":         "trained_models/resnet18.pth",
+        "backbone":     "resnet18",
     },
-    # "custom_cnn": {
-    #     "label":        "Custom CNN",
-    #     "path":         "trained_models/best_model.pth",
-    #     "backbone":     "custom",
-    # },
+    "custom_cnn": {
+        "label":        "Custom CNN",
+        "path":         "trained_models/customCnn.pth",
+        "backbone":     "custom",
+    },
 }
 
 PALETTE = [

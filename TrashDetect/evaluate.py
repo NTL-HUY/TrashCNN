@@ -16,7 +16,7 @@ from model import build_model
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=str, default=r"C:\Users\BAOHUY\Downloads\TACO dataset.v1i.coco")
-    parser.add_argument("--model_path", type=str, default="trained_models/best_model.pth")
+    parser.add_argument("--model_path", type=str, default="trained_models/resnet18.pth")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=0)
     return parser.parse_args()
