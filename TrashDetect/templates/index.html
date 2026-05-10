@@ -23,6 +23,52 @@
     .spinner { border-top-color: #b5f23d; animation: spin .7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .badge-score { background: rgba(181,242,61,.15); color: #b5f23d; }
+
+    /* Model toggle */
+    .model-btn {
+      flex: 1;
+      padding: 0.45rem 0.5rem;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 0.5rem;
+      font-size: 0.7rem;
+      font-family: 'Space Mono', monospace;
+      letter-spacing: 0.05em;
+      text-align: center;
+      cursor: pointer;
+      color: #6b7280;
+      background: transparent;
+      transition: all .2s;
+    }
+    .model-btn:hover  { border-color: rgba(181,242,61,.4); color: #b5f23d; }
+    .model-btn.active { border-color: #b5f23d; background: rgba(181,242,61,.12); color: #b5f23d; }
+
+    /* Slider */
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%;
+      height: 4px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 2px;
+      outline: none;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #b5f23d;
+      cursor: pointer;
+      box-shadow: 0 0 6px rgba(181,242,61,.5);
+      transition: transform .15s;
+    }
+    input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+    input[type=range]::-moz-range-thumb {
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: #b5f23d;
+      border: none;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body class="text-gray-200 font-mono min-h-screen">
@@ -37,7 +83,7 @@
   <!-- Main grid -->
   <main class="max-w-5xl mx-auto px-4 py-10 grid grid-cols-1 md:grid-cols-2 gap-6">
 
-    <!-- LEFT: Upload -->
+    <!-- LEFT: Upload + Controls -->
     <div class="bg-white/5 border border-white/10 rounded-xl overflow-hidden flex flex-col">
       <div class="px-5 py-3 border-b border-white/10 text-xs text-gray-500 tracking-widest uppercase">
         Input
@@ -63,6 +109,33 @@
                   class="absolute top-2 right-2 bg-black/60 border border-white/20 text-gray-400
                          hover:text-red-400 hover:border-red-400 rounded-full w-7 h-7 text-sm
                          flex items-center justify-center transition-colors">✕</button>
+        </div>
+
+        <!-- ── Controls ── -->
+        <div class="border border-white/10 rounded-lg p-4 flex flex-col gap-4">
+
+          <!-- Model selector -->
+          <div>
+            <p class="text-xs text-gray-500 uppercase tracking-widest mb-2">Model</p>
+            <div id="model-btns" class="flex gap-2">
+              <!-- populated by JS -->
+              <span class="text-xs text-gray-600 italic">Đang tải danh sách model…</span>
+            </div>
+          </div>
+
+          <!-- Confidence threshold -->
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <p class="text-xs text-gray-500 uppercase tracking-widest">Conf Threshold</p>
+              <span id="conf-val" class="text-xs font-bold text-accent">0.25</span>
+            </div>
+            <input id="conf-slider" type="range" min="0" max="1" step="0.01" value="0.25"
+                   oninput="onConfSlider(this.value)"/>
+            <div class="flex justify-between text-gray-700 text-xs mt-1">
+              <span>0.00</span><span>0.50</span><span>1.00</span>
+            </div>
+          </div>
+
         </div>
 
         <!-- Run button -->
@@ -92,17 +165,22 @@
         <!-- Loader -->
         <div id="loader" class="hidden flex-col items-center justify-center flex-1 gap-3">
           <div class="spinner w-10 h-10 rounded-full border-4 border-white/10"></div>
-          <span class="text-xs text-gray-500">Đang phân tích...</span>
+          <span class="text-xs text-gray-500">Đang phân tích…</span>
         </div>
 
         <!-- Result image -->
         <div id="result-wrap" class="hidden flex flex-col gap-4">
           <img id="result-img" class="w-full rounded-lg object-contain max-h-72" src="" alt="result"/>
 
+          <!-- Meta row: which model + threshold used -->
+          <div id="result-meta"
+               class="flex items-center gap-3 text-xs text-gray-600 border-t border-white/10 pt-3">
+          </div>
+
           <!-- Detection list -->
           <div>
             <p class="text-xs text-gray-500 uppercase tracking-widest mb-2">Detections</p>
-            <ul id="det-list" class="space-y-1.5 max-h-48 overflow-y-auto pr-1"></ul>
+            <ul id="det-list" class="space-y-1.5 max-h-44 overflow-y-auto pr-1"></ul>
           </div>
         </div>
 
@@ -111,7 +189,10 @@
   </main>
 
   <script>
-    let selectedFile = null;
+    // ── State ────────────────────────────────────────────
+    let selectedFile   = null;
+    let selectedModel  = null;   // set after /models loads
+    let confThresh     = 0.25;
 
     const COLORS = [
       '#FF6B6B','#FFD93D','#6BCB77','#4D96FF','#C77DFF',
@@ -124,7 +205,48 @@
       return classColor[cls];
     }
 
-    // ── Drag & drop ──
+    // ── Load model list from server ───────────────────────
+    async function loadModels() {
+      try {
+        const res    = await fetch('/models');
+        const models = await res.json();  // [{id, label}, ...]
+        const wrap   = document.getElementById('model-btns');
+        wrap.innerHTML = '';
+
+        models.forEach((m, i) => {
+          const btn = document.createElement('button');
+          btn.className   = 'model-btn' + (i === 0 ? ' active' : '');
+          btn.textContent = m.label;
+          btn.dataset.id  = m.id;
+          btn.onclick = () => selectModel(m.id);
+          wrap.appendChild(btn);
+        });
+
+        if (models.length) selectModel(models[0].id, false);
+      } catch (e) {
+        document.getElementById('model-btns').innerHTML =
+          '<span class="text-xs text-red-500">Không tải được model list</span>';
+      }
+    }
+
+    function selectModel(id, rerun = false) {
+      selectedModel = id;
+      document.querySelectorAll('.model-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.id === id);
+      });
+      // If there's already a result image visible, re-run automatically
+      if (rerun && selectedFile && !document.getElementById('result-wrap').classList.contains('hidden')) {
+        runDetection();
+      }
+    }
+
+    // ── Slider ───────────────────────────────────────────
+    function onConfSlider(val) {
+      confThresh = parseFloat(val);
+      document.getElementById('conf-val').textContent = confThresh.toFixed(2);
+    }
+
+    // ── Drag & drop ───────────────────────────────────────
     function onDragOver(e)  { e.preventDefault(); document.getElementById('drop-zone').classList.add('drop-active'); }
     function onDragLeave()  { document.getElementById('drop-zone').classList.remove('drop-active'); }
     function onDrop(e)      { e.preventDefault(); onDragLeave(); handleFile(e.dataTransfer.files[0]); }
@@ -133,7 +255,6 @@
     function handleFile(file) {
       if (!file || !file.type.startsWith('image/')) return;
       selectedFile = file;
-
       const reader = new FileReader();
       reader.onload = ev => {
         document.getElementById('preview-img').src = ev.target.result;
@@ -161,9 +282,9 @@
       document.getElementById('total-badge').classList.add('hidden');
     }
 
-    // ── Run detection ──
+    // ── Run detection ─────────────────────────────────────
     async function runDetection() {
-      if (!selectedFile) return;
+      if (!selectedFile || !selectedModel) return;
 
       const btn = document.getElementById('run-btn');
       btn.disabled = true;
@@ -174,20 +295,28 @@
 
       const form = new FormData();
       form.append('image', selectedFile);
+      form.append('model', selectedModel);
+      form.append('conf',  confThresh.toFixed(3));
 
       try {
         const res  = await fetch('/predict', { method: 'POST', body: form });
         const data = await res.json();
-
         if (data.error) throw new Error(data.error);
 
-        // Show result image
+        // Result image
         document.getElementById('result-img').src = 'data:image/jpeg;base64,' + data.image;
 
         // Total badge
         const badge = document.getElementById('total-badge');
         badge.textContent = `${data.detections.length} object${data.detections.length !== 1 ? 's' : ''}`;
         badge.classList.remove('hidden');
+
+        // Meta row
+        const modelLabel = document.querySelector(`.model-btn[data-id="${selectedModel}"]`)?.textContent ?? selectedModel;
+        document.getElementById('result-meta').innerHTML = `
+          <span class="bg-white/5 border border-white/10 px-2 py-0.5 rounded">🧠 ${modelLabel}</span>
+          <span class="bg-white/5 border border-white/10 px-2 py-0.5 rounded">🎯 conf ≥ ${confThresh.toFixed(2)}</span>
+        `;
 
         // Detection list
         const list = document.getElementById('det-list');
@@ -223,6 +352,9 @@
         btn.disabled = false;
       }
     }
+
+    // ── Init ─────────────────────────────────────────────
+    loadModels();
   </script>
 </body>
 </html>

@@ -29,39 +29,26 @@ class ConvBlock(nn.Module):
 
 
 class SimpleCNNBackbone(nn.Module):
-    def __init__(self):
+    def __init__(self, fpn_channels: int = 128):
         super().__init__()
 
-        # Block 1: học các đặc trưng đơn giản (cạnh, màu sắc, góc)
-        self.block1 = nn.Sequential(
-            ConvBlock(3, 32),
-            nn.MaxPool2d(kernel_size=2, stride=2),   # /2
-        )
-
-        # Block 2: học các đặc trưng phức tạp hơn (đường nét, kết cấu)
-        self.block2 = nn.Sequential(
-            ConvBlock(32, 64),
-            nn.MaxPool2d(kernel_size=2, stride=2),   # /2
-        )
-
-        # Block 3: học đặc trưng cấp cao (hình dạng vật thể)
-        self.block3 = nn.Sequential(
-            ConvBlock(64, 128),
-            nn.MaxPool2d(kernel_size=2, stride=2),   # /2
-        )
-
-        # Block 4: tổng hợp đặc trưng ngữ nghĩa (semantic), giữ resolution
+        self.block1 = nn.Sequential(ConvBlock(3, 32),   nn.MaxPool2d(2, 2))
+        self.block2 = nn.Sequential(ConvBlock(32, 64),  nn.MaxPool2d(2, 2))
+        self.block3 = nn.Sequential(ConvBlock(64, 128), nn.MaxPool2d(2, 2))
         self.block4 = ConvBlock(128, 256)
 
-        # Số channel đầu ra
-        self.out_channels = 256
+        self.fpn = FeaturePyramidNetwork(
+            in_channels_list=[32, 64, 128, 256],
+            out_channels=fpn_channels,
+        )
+        self.out_channels = fpn_channels
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.block1(x)
-        x = self.block2(x)
-        x = self.block3(x)
-        x = self.block4(x)
-        return x
+    def forward(self, x: torch.Tensor):
+        c2 = self.block1(x)
+        c3 = self.block2(c2)
+        c4 = self.block3(c3)
+        c5 = self.block4(c4)
+        return self.fpn({"c2": c2, "c3": c3, "c4": c4, "c5": c5})
 
 # PRETRAINED BACKBONE
 class ResNet18FPN(nn.Module):
@@ -109,51 +96,48 @@ class ResNet18FPN(nn.Module):
         return fpn_feats
 
 # BUILD MODEL
-def build_model(num_classes=6):
-    # backbone = ResNet18FPN()
-    backbone = SimpleCNNBackbone()
+def build_model(num_classes=6, backbone_type="resnet18"):
+    if backbone_type == "resnet18fpn":
+        backbone = ResNet18FPN()
+    else:
+        backbone = SimpleCNNBackbone()
 
     anchor_generator = AnchorGenerator(
-        sizes=((32,), (64,), (128,), (256,)),
+        sizes=(
+            (32,),
+            (64,),
+            (128,),
+            (256,),
+        ),
         aspect_ratios=(
             (0.5, 1.0, 2.0),
             (0.5, 1.0, 2.0),
             (0.5, 1.0, 2.0),
-            (0.5, 1.0, 2.0)
+            (0.5, 1.0, 2.0),
         )
     )
-
     model = FasterRCNN(
         backbone=backbone,
         num_classes=num_classes,
         rpn_anchor_generator=anchor_generator,
         min_size=640,
         max_size=640,
-        # Các tham số RPN — nếu không truyền thì dùng mặc định
-        rpn_pre_nms_top_n_train=2000,  # lấy top 2000 trước NMS lúc train
-        rpn_pre_nms_top_n_test=1000,  # lấy top 1000 trước NMS lúc inference
-        rpn_post_nms_top_n_train=2000,  # giữ tối đa 2000 sau NMS lúc train
-        rpn_post_nms_top_n_test=1000,  # giữ tối đa 1000 sau NMS lúc inference
-        rpn_nms_thresh=0.7,  # IoU > 0.7 thì coi là trùng, bỏ
-        rpn_score_thresh=0.0,  # score tối thiểu để giữ anchor
-
-        # Box/detection params — bạn đang thiếu phần này
-        box_score_thresh=0.05,  # loại box có score < 0.3
-        box_nms_thresh=0.5,  # NMS lần 2 sau khi head phân loại
-        box_detections_per_img=50,  # tối đa 50 box trên 1 ảnh
+        rpn_pre_nms_top_n_train=2000,
+        rpn_pre_nms_top_n_test=1000,
+        rpn_post_nms_top_n_train=2000,
+        rpn_post_nms_top_n_test=1000,
+        rpn_nms_thresh=0.7,
+        rpn_score_thresh=0.0,
+        box_score_thresh=0.05,
+        box_nms_thresh=0.5,
+        box_detections_per_img=50,
     )
     return model
 
-
 if __name__ == '__main__':
-
     x = torch.randn(1, 3, 416, 416)
-
     backbone = ResNet18FPN()
-
     output = backbone(x)
-
     print(type(output))
-
     for k, v in output.items():
         print(f"[{k}] -> {v.shape}")

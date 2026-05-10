@@ -85,7 +85,7 @@ def evaluate(args):
     print(f"  mAP medium     : {result['map_medium']:.4f}")
     print(f"  mAP large      : {result['map_large']:.4f}")
     print("-" * 55)
-    print("  mAP từng class:")
+    print("  AP từng class:")
     for idx, ap in enumerate(result_cls["map_per_class"].tolist()):
         class_id   = idx + 1
         class_name = id_to_name.get(class_id, f"class_{class_id}")

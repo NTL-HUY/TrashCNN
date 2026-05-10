@@ -63,7 +63,6 @@ def save_coco(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def filter_category_ids(coco: dict, remove_ids: set) -> dict:
-    """Xóa category theo ID và annotation tương ứng."""
     coco["categories"] = [c for c in coco["categories"] if c["id"] not in remove_ids]
     coco["annotations"] = [a for a in coco["annotations"] if a["category_id"] not in remove_ids]
     return coco
