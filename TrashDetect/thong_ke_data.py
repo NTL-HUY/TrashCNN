@@ -32,7 +32,7 @@ Config = Config()
 # ─────────────────────────────────────────────
 
 def load_coco(base_path: str, split: str) -> dict | None:
-    path = os.path.join(base_path, split, "_annotations.processed.coco.json")
+    path = os.path.join(base_path, split, "_annotations.coco.json")
     if not os.path.exists(path):
         print(f"  [SKIP] {path} not found")
         return None

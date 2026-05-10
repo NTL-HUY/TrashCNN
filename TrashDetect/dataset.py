@@ -30,9 +30,9 @@ class TrashDataset(Dataset):
             )
 
         with open(ann_path, encoding="utf-8") as f:
-            coco = json.load(f)
+            self.coco = json.load(f)
 
-        self.categories = coco["categories"]
+        self.categories = self.coco["categories"]
 
         # cat_id (0-based) → label cho model (1-based, 0 = background)
         self.cat_id_to_label = {
@@ -41,11 +41,11 @@ class TrashDataset(Dataset):
         }
 
         self.img_to_anns: dict[int, list] = defaultdict(list)
-        for ann in coco["annotations"]:
+        for ann in self.coco["annotations"]:
             self.img_to_anns[ann["image_id"]].append(ann)
 
         self.images = [
-            img for img in coco["images"]
+            img for img in self.coco["images"]
             if self.img_to_anns.get(img["id"])
         ]
 
@@ -96,7 +96,8 @@ class TrashDataset(Dataset):
             for i, c in enumerate(self.categories)
         }
 
-
+    def get_class_names(self):
+        return [cat["name"] for cat in sorted(self.coco.cats.values(), key=lambda x: x["id"])]
 
 def collate_fn(batch):
     return tuple(zip(*batch))

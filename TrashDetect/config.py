@@ -5,7 +5,7 @@ from typing import Optional
 
 @dataclass
 class Config:
-    OUTPUT_DIR      = "../FolderDemo/output_stats"
+    OUTPUT_DIR      = "./output_stats"
     # SPLITS          = ["train", "valid", "test"]
     DATA_GLASS_PATH = r"D:\Projects\Workspace\Coding\Dataset\detect glass.v1i.coco"
     DATA_TACO_PATH = r"D:\Projects\Workspace\Coding\Dataset\TACO dataset.v1i.coco"
