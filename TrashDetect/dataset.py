@@ -97,7 +97,7 @@ class TrashDataset(Dataset):
         }
 
     def get_class_names(self):
-        return [cat["name"] for cat in sorted(self.coco.cats.values(), key=lambda x: x["id"])]
+        return [cat["name"] for cat in self.categories]
 
 def collate_fn(batch):
     return tuple(zip(*batch))

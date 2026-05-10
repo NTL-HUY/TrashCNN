@@ -7,6 +7,7 @@ from torchvision.models import ResNet50_Weights, ResNet18_Weights
 from torchvision.ops import FeaturePyramidNetwork
 from torchvision.models import resnet18
 
+
 # CUSTOM BACKBONE
 class ConvBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int):
