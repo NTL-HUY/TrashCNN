@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 import argparse
 from dataset import TrashDataset, collate_fn
-from custome_backbone import build_model
+from model import build_model
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
