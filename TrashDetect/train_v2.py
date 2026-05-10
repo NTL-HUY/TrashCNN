@@ -57,7 +57,7 @@ def get_train_transform(args):
     )
 
 
-def get_val_transform():
+def get_val_transform(args):
     return A.Compose([
         A.Resize(args.image_size, args.image_size),
         A.ToFloat(max_value=255.0),
@@ -77,7 +77,7 @@ def train(args):
     train_dataset = TrashDataset(
         root=args.data_path,
         split='train',
-        transforms=get_train_transform()
+        transforms=get_train_transform(args)
     )
 
     train_data_loader = DataLoader(
@@ -90,7 +90,7 @@ def train(args):
     val_dataset = TrashDataset(
         root=args.data_path,
         split='valid',
-        transforms=get_val_transform()
+        transforms=get_val_transform(args)
     )
     val_data_loader = DataLoader(
         dataset=val_dataset,
@@ -204,4 +204,3 @@ def train(args):
 if __name__ == "__main__":
     args = get_args()
     train(args)
-
