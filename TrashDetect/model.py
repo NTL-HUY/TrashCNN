@@ -7,62 +7,7 @@ from torchvision.models import ResNet50_Weights, ResNet18_Weights
 from torchvision.ops import FeaturePyramidNetwork
 from torchvision.models import resnet18
 
-# CUSTOM BACKBONE
-class ConvBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(
-                in_channels,
-                out_channels,
-                kernel_size=3,
-                padding=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-        )
 
-    def forward(self, x):
-        return self.block(x)
-
-
-class SimpleCNNBackbone(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        # Block 1: học các đặc trưng đơn giản (cạnh, màu sắc, góc)
-        self.block1 = nn.Sequential(
-            ConvBlock(3, 32),
-            nn.MaxPool2d(kernel_size=2, stride=2),   # /2
-        )
-
-        # Block 2: học các đặc trưng phức tạp hơn (đường nét, kết cấu)
-        self.block2 = nn.Sequential(
-            ConvBlock(32, 64),
-            nn.MaxPool2d(kernel_size=2, stride=2),   # /2
-        )
-
-        # Block 3: học đặc trưng cấp cao (hình dạng vật thể)
-        self.block3 = nn.Sequential(
-            ConvBlock(64, 128),
-            nn.MaxPool2d(kernel_size=2, stride=2),   # /2
-        )
-
-        # Block 4: tổng hợp đặc trưng ngữ nghĩa (semantic), giữ resolution
-        self.block4 = ConvBlock(128, 256)
-
-        # Số channel đầu ra
-        self.out_channels = 256
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.block1(x)
-        x = self.block2(x)
-        x = self.block3(x)
-        x = self.block4(x)
-        return x
-
-# PRETRAINED BACKBONE
 class ResNet18FPN(nn.Module):
     def __init__(self):
         super().__init__()
@@ -107,10 +52,10 @@ class ResNet18FPN(nn.Module):
 
         return fpn_feats
 
-# BUILD MODEL
+
 def build_model(num_classes=6):
-    # backbone = ResNet18FPN()
-    backbone = SimpleCNNBackbone()
+    # Option A: ResNet-50 pretrained + FPN (mAP cao nhất)
+    backbone = ResNet18FPN()
 
     anchor_generator = AnchorGenerator(
         sizes=((32,), (64,), (128,), (256,)),
